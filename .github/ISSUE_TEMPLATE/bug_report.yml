@@ -1,0 +1,38 @@
+name: Bug report
+description: Something DevKit does is wrong — a crash, a wrong score, or a false positive/negative.
+labels: [bug]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened
+      description: What did you run, what did you expect, and what did you actually get?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: The exact command, and, for a rule false positive/negative, the smallest code snippet that reproduces it.
+      render: shell
+    validations:
+      required: true
+  - type: input
+    id: devkit-version
+    attributes:
+      label: DevKit version
+      description: Output of `devkit --version` (or the commit/branch if running from source)
+    validations:
+      required: true
+  - type: input
+    id: node-version
+    attributes:
+      label: Node.js version
+      description: Output of `node --version`
+    validations:
+      required: true
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Relevant `.devkitrc.json` contents, OS, or other context.

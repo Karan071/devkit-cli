@@ -3,4 +3,7 @@ dist/
 .devkit/
 coverage/
 *.log
+*.tsbuildinfo
 .DS_Store
+.vscode/
+.idea/

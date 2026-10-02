@@ -3,14 +3,15 @@
   "version": "0.1.0",
   "description": "Deterministic repository quality scanner for JavaScript and TypeScript projects",
   "bin": {
-    "devkit-quality": "bin/devkit.js"
+    "devkit": "bin/devkit.js"
   },
   "main": "dist/cli.js",
   "files": [
     "dist",
     "bin",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "CHANGELOG.md"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -24,6 +25,10 @@
     "type": "git",
     "url": "git+https://github.com/Karan071/devkit-cli.git"
   },
+  "homepage": "https://github.com/Karan071/devkit-cli#readme",
+  "bugs": {
+    "url": "https://github.com/Karan071/devkit-cli/issues"
+  },
   "keywords": [
     "cli",
     "typescript",
@@ -34,6 +39,9 @@
   "license": "MIT",
   "author": "Karan Chourasia",
   "type": "commonjs",
+  "engines": {
+    "node": ">=18"
+  },
   "dependencies": {
     "commander": "^12.1.0",
     "typescript": "^5.7.2"

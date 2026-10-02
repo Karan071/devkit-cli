@@ -1,11 +1,15 @@
 # DevKit
 
+[![CI](https://github.com/Karan071/devkit-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/Karan071/devkit-cli/actions/workflows/ci.yml)
+[![npm version](https://img.shields.io/npm/v/devkit-quality.svg)](https://www.npmjs.com/package/devkit-quality)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 DevKit is a deterministic, offline code-quality scanner for JavaScript and TypeScript repositories. It walks a project, parses every source file with the TypeScript compiler, and reports a 0-10 "code quality" score backed by concrete, file-and-line findings — dead code, unused dependencies, excessive complexity, duplication, unsafe error handling, unsafe TypeScript, security anti-patterns, architecture violations, and repository hygiene issues.
 
 It does not call an LLM, an API, or the network. Every finding is reproducible from the source tree alone.
 
 ```bash
-npx devkit scan
+npx devkit-quality scan
 ```
 
 ```
@@ -33,6 +37,8 @@ DevKit Repository Scan
 - [Output formats](#output-formats)
 - [CI/CD integration](#cicd-integration)
 - [Development](#development)
+- [Contributing](#contributing)
+- [License](#license)
 
 ## How it works
 
@@ -310,3 +316,11 @@ npm run dev        # tsx src/cli.ts (no build step)
 ```
 
 Tests live in [`src/__tests__/`](src/__tests__), one file per rule category plus an end-to-end scan test (`e2e.test.ts`) and a scoring test. Each rule test typically builds a small in-memory `RuleContext` (see [`testUtils.ts`](src/__tests__/testUtils.ts)) and asserts on the findings a rule produces for known-good and known-bad snippets.
+
+## Contributing
+
+Contributions are welcome — new rules, bug fixes, false-positive reports, and documentation improvements. See [CONTRIBUTING.md](CONTRIBUTING.md) for the development setup and the process for adding a rule. This project follows the [Code of Conduct](CODE_OF_CONDUCT.md). To report a security issue, see [SECURITY.md](SECURITY.md) rather than opening a public issue.
+
+## License
+
+[MIT](LICENSE) © Karan Chourasia
