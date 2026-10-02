@@ -7,18 +7,28 @@ import { writeConfig } from './config';
 import { getRuleById, listRules } from './rules';
 import { formatBaselineCompare, formatJson, formatMarkdown, formatMetrics, formatSarif, formatTerminal } from './reporters';
 import { scanRepository } from './scanner';
-import { computeScores } from './scoring';
-import { Spinner, waitForNextTick } from './terminal';
-import { determineExitFailure, filterFindings, isKnownSeverity } from './cliLogic';
+import { ProgressRenderer, color, pad, severityColor } from './terminal';
+import { determineExitFailure, filterFindings, validateGates } from './cliLogic';
+import type { ScanSummary } from './types';
 
-async function runWithSpinner<T>(text: string, task: () => T): Promise<T> {
-    const spinner = new Spinner(text);
-    spinner.start();
-    await waitForNextTick();
+function resolveTarget(target: string | undefined): string {
+    const root = path.resolve(target ?? process.cwd());
+    if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) {
+        throw new Error(`Not a directory: ${root}`);
+    }
+    return root;
+}
+
+function scanWithProgress(root: string): ScanSummary {
+    const progress = new ProgressRenderer();
     try {
-        return task();
-    } finally {
-        spinner.stop();
+        const summary = scanRepository(root, (update) => progress.update(update));
+        const coverage = summary.coverage;
+        progress.finish(coverage ? `Scanned ${coverage.analyzedFiles} source files + ${coverage.textFilesScanned} other files` : 'Scan complete');
+        return summary;
+    } catch (error) {
+        progress.fail();
+        throw error;
     }
 }
 
@@ -34,21 +44,39 @@ program
         console.log(`Created config at ${configPath}`);
     });
 
-async function runScan(options: { json?: boolean; format?: string; category?: string; severity?: string; minScore?: string; failOn?: string }): Promise<boolean> {
-    const summary = await runWithSpinner('Scanning repository...', () => scanRepository(process.cwd()));
+interface ScanOptions {
+    json?: boolean;
+    format?: string;
+    category?: string;
+    severity?: string;
+    minScore?: string;
+    failOn?: string;
+}
 
-    const filteredFindings = filterFindings(summary.findings, options);
+const OUTPUT_FORMATS = ['terminal', 'json', 'markdown', 'sarif'];
 
-    const filteredSummary =
-        filteredFindings.length === summary.findings.length
-            ? summary
-            : {
-                ...summary,
-                findings: filteredFindings,
-                ...computeScores(filteredFindings, summary.metrics.sourceLOC)
-            };
-
+function runScan(target: string | undefined, options: ScanOptions): boolean {
+    const gateError = validateGates(options);
+    if (gateError) {
+        console.error(gateError);
+        return true;
+    }
     const outputType = options.json ? 'json' : (options.format ?? 'terminal');
+    if (!OUTPUT_FORMATS.includes(outputType)) {
+        console.error(`Unknown format "${outputType}". Use one of: ${OUTPUT_FORMATS.join(', ')}`);
+        return true;
+    }
+
+    const summary = scanWithProgress(resolveTarget(target));
+
+    // Filters narrow the findings that are displayed; scores always describe the whole repository,
+    // so `--category security --min-score 8` still gates on the real overall score.
+    const filteredFindings = filterFindings(summary.findings, options);
+    const filteredSummary = { ...summary, findings: filteredFindings };
+    if ((options.category || options.severity) && filteredFindings.length === 0 && summary.findings.length > 0 && outputType === 'terminal') {
+        console.error(color.yellow(`No findings match the filter. Categories: ${[...new Set(summary.findings.map((finding) => finding.category))].join(', ')}`));
+    }
+
     const output =
         outputType === 'json'
             ? formatJson(filteredSummary)
@@ -60,48 +88,54 @@ async function runScan(options: { json?: boolean; format?: string; category?: st
 
     console.log(output);
 
-    if (options.failOn && !isKnownSeverity(options.failOn)) console.error(`Unknown severity: ${options.failOn}`);
-    return determineExitFailure(filteredSummary, options);
+    return determineExitFailure(summary, { minScore: options.minScore }) || determineExitFailure(filteredSummary, { failOn: options.failOn });
 }
 
 program
-    .command('scan')
-    .description('Scan the current repository for code-quality issues')
+    .command('scan [path]')
+    .description('Scan a repository (default: current directory) for code-quality issues')
     .option('--json', 'Output JSON instead of terminal text')
     .option('--format <type>', 'Output format: terminal, json, markdown, sarif')
-    .option('--category <name>', 'Filter by category')
-    .option('--severity <level>', 'Filter by severity')
-    .option('--min-score <score>', 'Fail with exit code 1 when score falls below this threshold')
-    .option('--fail-on <severity>', 'Fail with exit code 1 when any finding at or above this severity exists')
-    .action(async (options) => {
-        if (await runScan(options)) {
+    .option('--category <name>', 'Show only one category (e.g. security, dead-code, complexity)')
+    .option('--severity <level>', 'Show only one severity (critical, high, medium, low, info)')
+    .option('--min-score <score>', 'Fail with exit code 1 when the overall score falls below this threshold')
+    .option('--fail-on <severity>', 'Fail with exit code 1 when any shown finding is at or above this severity')
+    .action((target: string | undefined, options: ScanOptions) => {
+        if (runScan(target, options)) {
             process.exitCode = 1;
         }
     });
 
 program
-    .command('report')
-    .description('Generate a detailed Markdown report of the current repository')
-    .action(async () => {
-        const summary = await runWithSpinner('Scanning repository...', () => scanRepository(process.cwd()));
-        console.log(formatMarkdown(summary));
+    .command('report [path]')
+    .description('Generate a detailed Markdown report of a repository')
+    .action((target: string | undefined) => {
+        console.log(formatMarkdown(scanWithProgress(resolveTarget(target))));
     });
 
 program
-    .command('metrics')
-    .description('Print repository metrics for the current project')
-    .action(async () => {
-        const summary = await runWithSpinner('Scanning repository...', () => scanRepository(process.cwd()));
-        console.log(formatMetrics(summary));
+    .command('metrics [path]')
+    .description('Print repository metrics')
+    .action((target: string | undefined) => {
+        console.log(formatMetrics(scanWithProgress(resolveTarget(target))));
     });
 
 program
     .command('rules')
     .description('List the available built-in rules')
     .action(() => {
-        for (const rule of listRules()) {
-            console.log(`${rule.id} - ${rule.title} (${rule.category})`);
+        const rules = listRules();
+        const idWidth = Math.max(...rules.map((rule) => rule.id.length)) + 2;
+        const titleWidth = Math.max(...rules.map((rule) => rule.title.length)) + 2;
+        let category = '';
+        for (const rule of [...rules].sort((a, b) => a.category.localeCompare(b.category) || a.id.localeCompare(b.id))) {
+            if (rule.category !== category) {
+                category = rule.category;
+                console.log(`\n${color.bold(category)}`);
+            }
+            console.log(`  ${color.cyan(pad(rule.id, idWidth))}${pad(rule.title, titleWidth)}${severityColor(rule.severity, rule.severity.toLowerCase())}`);
         }
+        console.log(color.dim(`\n${rules.length} rules · devkit explain <RULE_ID> for details`));
     });
 
 program
@@ -130,10 +164,10 @@ program
     });
 
 program
-    .command('baseline <action>')
+    .command('baseline <action> [path]')
     .description('Create or compare a baseline score stored under .devkit')
-    .action(async (action: string) => {
-        const root = process.cwd();
+    .action((action: string, target: string | undefined) => {
+        const root = resolveTarget(target);
         const dir = path.join(root, '.devkit');
         const baselineFile = path.join(dir, 'baseline.json');
 
@@ -142,7 +176,7 @@ program
         }
 
         if (action === 'create') {
-            const summary = await runWithSpinner('Scanning repository...', () => scanRepository(root));
+            const summary = scanWithProgress(root);
             fs.writeFileSync(baselineFile, JSON.stringify({ score: summary.score }, null, 2));
             console.log(`Created baseline at ${baselineFile} with score ${summary.score.toFixed(1)}`);
             return;
@@ -156,7 +190,7 @@ program
             }
 
             const previousBaseline = JSON.parse(fs.readFileSync(baselineFile, 'utf8')) as { score?: number };
-            const current = await runWithSpinner('Scanning repository...', () => scanRepository(root));
+            const current = scanWithProgress(root);
             const previousScore = Number(previousBaseline.score ?? current.score);
             console.log(formatBaselineCompare(previousScore, current.score));
             return;
@@ -167,10 +201,10 @@ program
     });
 
 program
-    .command('fix')
+    .command('fix [path]')
     .description('Preview findings marked as safe to fix')
-    .action(async () => {
-        const summary = await runWithSpinner('Scanning repository...', () => scanRepository(process.cwd()));
+    .action((target: string | undefined) => {
+        const summary = scanWithProgress(resolveTarget(target));
         const safeFixes = summary.findings.filter((finding) => finding.fixAvailable);
 
         console.log('Safe fix preview');

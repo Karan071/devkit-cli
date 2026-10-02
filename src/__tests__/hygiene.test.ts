@@ -56,3 +56,20 @@ describe('hygiene rules', () => {
         expect(findingsFor(summary.findings, 'HYGIENE004').length).toBe(0);
     });
 });
+
+describe('CLI entry file heuristic', () => {
+    it('lowers confidence (but still reports) console output in a file that builds a CLI program', () => {
+        dir = makeFixture({
+            'src/cli.ts': "import { Command } from 'commander';\nconst program = new Command();\nconsole.log('usage');\n"
+        });
+        const found = findingsFor(scanRepository(dir).findings, 'HYGIENE001');
+        expect(found).toHaveLength(1);
+        expect(found[0].confidence).toBe('LOW');
+    });
+
+    it('keeps full confidence for console output outside a CLI entry file', () => {
+        dir = makeFixture({ 'src/service.ts': "export function run() {\n    console.log('debug');\n    return 1;\n}\n" });
+        const found = findingsFor(scanRepository(dir).findings, 'HYGIENE001');
+        expect(found[0].confidence).toBe('CERTAIN');
+    });
+});

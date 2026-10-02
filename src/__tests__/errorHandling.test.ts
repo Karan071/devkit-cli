@@ -6,6 +6,11 @@ let dir: string | undefined;
 afterEach(() => { if (dir) cleanupFixture(dir); dir = undefined; });
 
 describe('promise handling rules', () => {
+    it('accepts a catch block whose comment documents the intentional ignore', () => {
+        dir = makeFixture({ 'src/index.ts': 'export function run() {\n    try { JSON.parse("x"); } catch {\n        // best effort: invalid input falls back to defaults\n    }\n}\n' });
+        expect(findingsFor(scanRepository(dir).findings, 'ERR001')).toHaveLength(0);
+    });
+
     it('flags an empty catch block', () => {
         dir = makeFixture({ 'src/index.ts': `export function run() { try { risky(); } catch (error) { } }` });
         expect(findingsFor(scanRepository(dir).findings, 'ERR001').length).toBeGreaterThan(0);

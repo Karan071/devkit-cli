@@ -58,7 +58,9 @@ export function runErrorHandlingRules(context: RuleContext): Finding[] {
         const visit = (node: ts.Node): void => {
             if (ts.isCatchClause(node)) {
                 const statements = node.block.statements;
-                if (isRuleEnabled(context.config, 'ERR001') && statements.length === 0) {
+                // A comment inside the block documents an intentional ignore, which is what the rule asks for.
+                const documented = /\/\/|\/\*/.test(node.block.getText());
+                if (isRuleEnabled(context.config, 'ERR001') && statements.length === 0 && !documented) {
                     const { line, column } = lineAndColumn(sourceFile, node.getStart());
                     findings.push(buildFinding({
                         ruleId: 'ERR001', category: 'errorHandling', severity: 'MEDIUM', confidence: 'CERTAIN', file: relativePath, line, column,

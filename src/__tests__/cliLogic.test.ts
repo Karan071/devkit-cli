@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { determineExitFailure, filterFindings } from '../cliLogic';
+import { determineExitFailure, filterFindings, validateGates } from '../cliLogic';
 import type { Finding, ScanSummary } from '../types';
 
 const finding = (ruleId: string, severity: Finding['severity'], category = 'security'): Finding => ({
@@ -27,5 +27,27 @@ describe('CLI scan logic', () => {
         expect(determineExitFailure(summary, { failOn: 'HIGH' })).toBe(true);
         expect(determineExitFailure(summary, { failOn: 'CRITICAL' })).toBe(false);
         expect(determineExitFailure(summary, { failOn: 'unknown' })).toBe(true);
+    });
+
+    it('accepts kebab-case, spaced and aliased category names', () => {
+        const findings = [finding('DEAD002', 'MEDIUM', 'deadCode'), finding('TS001', 'MEDIUM', 'typescript')];
+        expect(filterFindings(findings, { category: 'dead-code' })).toHaveLength(1);
+        expect(filterFindings(findings, { category: 'Dead Code' })).toHaveLength(1);
+        expect(filterFindings(findings, { category: 'type-safety' })).toHaveLength(1);
+    });
+
+    it('rejects a non-numeric or out-of-range --min-score instead of silently passing', () => {
+        expect(validateGates({ minScore: 'abc' })).not.toBeNull();
+        expect(validateGates({ minScore: '11' })).not.toBeNull();
+        expect(validateGates({ minScore: '7.5' })).toBeNull();
+        expect(determineExitFailure(summary, { minScore: 'abc' })).toBe(true);
+    });
+
+    it('fails a --min-score gate when no source files were analyzed', () => {
+        const empty: ScanSummary = {
+            ...summary, score: 10, findings: [],
+            coverage: { discoveryMethod: 'filesystem', discoveredFiles: 0, analyzedFiles: 0, textFilesScanned: 0, generatedFilesSkipped: 0, tooLargeFilesSkipped: [], binaryFilesSkipped: 0, languages: {}, durationMs: 1 }
+        };
+        expect(determineExitFailure(empty, { minScore: '5' })).toBe(true);
     });
 });
