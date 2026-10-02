@@ -1,0 +1,34 @@
+{
+  "name": "devkit",
+  "version": "0.1.0",
+  "description": "Deterministic repository quality scanner for JavaScript and TypeScript projects",
+  "bin": {
+    "devkit": "bin/devkit.js"
+  },
+  "main": "dist/cli.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/cli.js",
+    "dev": "tsx src/cli.ts",
+    "scan": "tsx src/cli.ts scan",
+    "test": "vitest run"
+  },
+  "keywords": [
+    "cli",
+    "typescript",
+    "code-quality",
+    "slop-scanner",
+    "static-analysis"
+  ],
+  "license": "MIT",
+  "type": "commonjs",
+  "dependencies": {
+    "commander": "^12.1.0",
+    "typescript": "^5.7.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "vitest": "^5.0.3"
+  }
+}
