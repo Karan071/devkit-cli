@@ -29,6 +29,12 @@ export function runRedundancyRules(context: RuleContext): Finding[] {
                 (LOOSE_EQUALITY_OPERATORS.has(node.operatorToken.kind) || STRICT_EQUALITY_OPERATORS.has(node.operatorToken.kind)) &&
                 (isBooleanLiteral(node.left) || isBooleanLiteral(node.right))
             ) {
+                const comparedExpression = isBooleanLiteral(node.left) ? node.right : node.left;
+                const comparedType = context.program.getTypeChecker().getTypeAtLocation(comparedExpression);
+                if (comparedType.isUnion() && comparedType.types.some((member) => (member.flags & ts.TypeFlags.BooleanLike) === 0)) {
+                    ts.forEachChild(node, visit);
+                    return;
+                }
                 const { line, column } = lineAndColumn(sourceFile, node.getStart());
                 findings.push(
                     buildFinding({

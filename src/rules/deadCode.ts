@@ -9,6 +9,13 @@ import { findNodeAtPosition, isStatementContainer, lineAndColumn } from '../ast/
 
 const UNUSED_DIAGNOSTIC_CODES = new Set([6133, 6192, 6196, 6198]);
 
+function hasDynamicRequireHint(context: RuleContext, relativePath: string): boolean {
+    for (const hint of context.moduleGraph.dynamicRequireHints) {
+        if (hint === '.' || relativePath === hint || relativePath.startsWith(`${hint}/`)) return true;
+    }
+    return false;
+}
+
 function classifyUnusedDiagnostic(
     node: ts.Node,
     code: number
@@ -154,6 +161,7 @@ function detectUnusedExports(context: RuleContext): Finding[] {
 
         const used = usedExportsByFile.get(file) ?? new Set<string>();
         const relativePath = path.relative(context.projectRoot, file).replace(/\\/g, '/');
+        const dynamicHint = hasDynamicRequireHint(context, relativePath);
 
         for (const exportInfo of exports) {
             if (used.has(exportInfo.name)) {
@@ -165,12 +173,12 @@ function detectUnusedExports(context: RuleContext): Finding[] {
                     ruleId: 'DEAD009',
                     category: 'deadCode',
                     severity: 'MEDIUM',
-                    confidence: 'MEDIUM',
+                    confidence: dynamicHint ? 'LOW' : 'MEDIUM',
                     file: relativePath,
                     line: exportInfo.line,
                     column: 1,
                     message: 'Unused export',
-                    description: `Export "${exportInfo.name}" is not imported by any other file in the project.`,
+                    description: `Export "${exportInfo.name}" is not imported by any other file in the project.${dynamicHint ? ' A nearby dynamic require/import could not be resolved, so verify this manually.' : ''}`,
                     evidence: exportInfo.name,
                     suggestion: 'Remove the export or confirm it is part of a public API consumed outside this repository.',
                     fixAvailable: false
@@ -198,18 +206,19 @@ function detectUnusedFiles(context: RuleContext): Finding[] {
         if (incoming && incoming.size > 0) continue;
 
         const relativePath = path.relative(context.projectRoot, file).replace(/\\/g, '/');
+        const dynamicHint = hasDynamicRequireHint(context, relativePath);
 
         findings.push(
             buildFinding({
                 ruleId: 'DEAD010',
                 category: 'deadCode',
                 severity: 'MEDIUM',
-                confidence: 'MEDIUM',
+                confidence: dynamicHint ? 'LOW' : 'MEDIUM',
                 file: relativePath,
                 line: 1,
                 column: 1,
                 message: 'Unused file',
-                description: 'This file is never imported by any other file and is not a configured entry point.',
+                description: `This file is never imported by any other file and is not a configured entry point.${dynamicHint ? ' A nearby dynamic require/import could not be resolved, so verify this manually.' : ''}`,
                 evidence: relativePath,
                 suggestion: 'Delete the file or wire it up as a reachable entry point.',
                 fixAvailable: false

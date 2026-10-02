@@ -36,6 +36,7 @@ export const PROGRAM_COMPILER_OPTIONS: ts.CompilerOptions = {
     noUnusedLocals: true,
     noUnusedParameters: true,
     noImplicitAny: true,
+    strictNullChecks: true,
     strict: false
 };
 

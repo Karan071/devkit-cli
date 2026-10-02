@@ -262,10 +262,22 @@ export const rules: RuleDefinition[] = [
         category: 'errorHandling',
         severity: 'MEDIUM',
         confidence: 'MEDIUM',
-        description: 'A call to a locally declared async function is neither awaited nor handled.',
-        explanation: 'Limited to async functions whose declaration is visible in the same file to avoid false positives.',
+        description: 'A Promise-like result is neither awaited nor handled.',
+        explanation: 'Uses the TypeScript type checker to recognize Promise-returning calls, including methods and imported functions.',
         example: 'async function save() { }\nsave(); // not awaited',
         why: 'Unhandled promise rejections can crash the process or silently swallow errors.',
+        fixClassification: 'manual'
+    },
+    {
+        id: 'ERR004',
+        title: 'Promise chain without rejection handler',
+        category: 'errorHandling',
+        severity: 'MEDIUM',
+        confidence: 'MEDIUM',
+        description: 'A .then() chain is not followed by a .catch() handler.',
+        explanation: 'A rejected Promise can become an unhandled rejection when the chain has no error handler.',
+        example: 'loadData().then(render);',
+        why: 'Unhandled asynchronous errors can fail requests or terminate processes.',
         fixClassification: 'manual'
     },
 
@@ -367,7 +379,7 @@ export const rules: RuleDefinition[] = [
         severity: 'HIGH',
         confidence: 'HIGH',
         description: 'Potential secret material appears directly in source code.',
-        explanation: 'Secrets committed to source control are highly risky and often exposed by accident.',
+        explanation: 'Recognizes common provider token formats and high-entropy values assigned to credential-like variable names.',
         example: 'const apiKey = "sk_live_123"',
         why: 'Secrets in code create immediate security and operational risk.',
         fixClassification: 'manual'
@@ -390,8 +402,8 @@ export const rules: RuleDefinition[] = [
         category: 'security',
         severity: 'HIGH',
         confidence: 'MEDIUM',
-        description: 'child_process exec/execSync is called with a dynamically built command string.',
-        explanation: 'Flagged only when the command argument is a template literal or string concatenation.',
+        description: 'A shell command is dynamically built or shell execution is explicitly enabled.',
+        explanation: 'Checks dynamic command expressions, a one-hop local variable initializer, and shell: true on spawn-family calls.',
         example: 'exec(`rm -rf ${userPath}`)',
         why: 'Unsanitized dynamic shell commands are a classic command-injection vector.',
         fixClassification: 'manual'
@@ -403,7 +415,7 @@ export const rules: RuleDefinition[] = [
         severity: 'MEDIUM',
         confidence: 'MEDIUM',
         description: 'innerHTML/outerHTML is assigned to, or dangerouslySetInnerHTML is used.',
-        explanation: 'Detected via AST inspection of assignment expressions and JSX attributes.',
+        explanation: 'Detected via AST, insertAdjacentHTML calls, and raw HTML bindings in Vue/HTML templates.',
         example: 'el.innerHTML = userContent;',
         why: 'Rendering unsanitized content as HTML is a common cross-site-scripting vector.',
         fixClassification: 'manual'
@@ -430,6 +442,42 @@ export const rules: RuleDefinition[] = [
         explanation: 'Detected via text scanning for the environment variable assignment.',
         example: 'process.env.NODE_TLS' + '_REJECT_UNAUTHORIZED = "0"',
         why: 'Disabling TLS verification exposes the process to man-in-the-middle attacks.',
+        fixClassification: 'manual'
+    },
+    {
+        id: 'SEC008',
+        title: 'Potential SQL injection',
+        category: 'security',
+        severity: 'HIGH',
+        confidence: 'MEDIUM',
+        description: 'A SQL query string is dynamically constructed.',
+        explanation: 'Concatenating input into query syntax can allow an attacker to alter the query.',
+        example: 'db.query(`SELECT * FROM users WHERE id = ${id}`);',
+        why: 'Parameterized queries keep data separate from executable SQL.',
+        fixClassification: 'manual'
+    },
+    {
+        id: 'SEC009',
+        title: 'Potential path traversal',
+        category: 'security',
+        severity: 'HIGH',
+        confidence: 'LOW',
+        description: 'A filesystem path may include untrusted request input.',
+        explanation: 'Unvalidated path segments can escape an intended directory.',
+        example: "readFile(path.join(root, req.params.file));",
+        why: 'Path traversal can expose or overwrite files outside the intended area.',
+        fixClassification: 'manual'
+    },
+    {
+        id: 'SEC010',
+        title: 'Unsafe deserialization or dynamic execution',
+        category: 'security',
+        severity: 'HIGH',
+        confidence: 'MEDIUM',
+        description: 'An unsafe deserializer or dynamic execution API is used.',
+        explanation: 'Untrusted serialized values or code can trigger object construction or execution.',
+        example: 'unserialize(input);',
+        why: 'Unsafe deserialization can lead to code execution or unexpected object behavior.',
         fixClassification: 'manual'
     },
 

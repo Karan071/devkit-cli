@@ -32,6 +32,16 @@ describe('dependency hygiene', () => {
         expect(unused.some((f) => f.evidence === 'left-pad')).toBe(false);
     });
 
+    it('counts CommonJS require calls as dependency usage', () => {
+        dir = makeFixture({
+            'package.json': JSON.stringify({ name: 'fixture', dependencies: { 'left-pad': '^1.0.0' } }),
+            'src/index.js': `const pad = require('left-pad');\nmodule.exports = pad;\n`
+        });
+
+        const summary = scanRepository(dir);
+        expect(findingsFor(summary.findings, 'DEP001').some((finding) => finding.evidence === 'left-pad')).toBe(false);
+    });
+
     it('does not flag @types/* packages as unused', () => {
         dir = makeFixture({
             'package.json': JSON.stringify({ name: 'fixture', devDependencies: { '@types/node': '^22.0.0' } }),

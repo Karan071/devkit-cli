@@ -1,9 +1,12 @@
 import path from 'node:path';
+import ts from 'typescript';
 import type { RuleContext } from '../context';
 import type { Finding } from '../types';
 import { buildFinding } from '../finding';
 import { isRuleEnabled } from '../config';
 import { readFileSafe } from '../discovery';
+import { collectCommentRanges } from '../ast/comments';
+import { lineAndColumn } from '../ast/walk';
 
 const BACKUP_FILE_PATTERN = /(\.bak|\.orig|\.tmp|~)$/i;
 const ENV_FILE_PATTERN = /^\.env(\..+)?$/i;
@@ -14,67 +17,45 @@ export function runHygieneRules(context: RuleContext): Finding[] {
 
     for (const file of context.files) {
         const text = readFileSafe(file);
+        const sourceFile = context.program.getSourceFile(file);
+        if (!sourceFile) continue;
         const relativePath = path.relative(context.projectRoot, file).replace(/\\/g, '/');
-        const lines = text.split(/\r\n|\r|\n/);
-
-        for (let i = 0; i < lines.length; i += 1) {
-            const line = lines[i];
-
-            if (isRuleEnabled(context.config, 'HYGIENE001') && /console\.(log|debug|warn|error)\s*\(/.test(line)) {
-                findings.push(
-                    buildFinding({
-                        ruleId: 'HYGIENE001',
-                        category: 'hygiene',
-                        severity: 'LOW',
-                        confidence: 'CERTAIN',
-                        file: relativePath,
-                        line: i + 1,
-                        column: line.search(/console\./) + 1,
-                        message: 'Debug statement found',
-                        description: 'Console output remains in source code.',
-                        evidence: line.trim(),
-                        suggestion: 'Remove or gate debug logging before production deployment.',
-                        fixAvailable: true
-                    })
-                );
+        const visit = (node: ts.Node): void => {
+            if (isRuleEnabled(context.config, 'HYGIENE001') && ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) &&
+                ts.isIdentifier(node.expression.expression) && node.expression.expression.text === 'console' &&
+                ['log', 'debug', 'warn', 'error'].includes(node.expression.name.text)) {
+                const { line, column } = lineAndColumn(sourceFile, node.getStart());
+                findings.push(buildFinding({
+                    ruleId: 'HYGIENE001', category: 'hygiene', severity: 'LOW', confidence: 'CERTAIN', file: relativePath, line, column,
+                    message: 'Debug statement found', description: 'Console output remains in source code.', evidence: node.getText().slice(0, 160),
+                    suggestion: 'Remove or gate debug logging before production deployment.', fixAvailable: true
+                }));
             }
-
-            if (isRuleEnabled(context.config, 'HYGIENE001') && /\bdebugger\b/.test(line)) {
-                findings.push(
-                    buildFinding({
-                        ruleId: 'HYGIENE001',
-                        category: 'hygiene',
-                        severity: 'LOW',
-                        confidence: 'CERTAIN',
-                        file: relativePath,
-                        line: i + 1,
-                        column: line.search(/debugger/) + 1,
-                        message: 'Debugger statement found',
-                        description: 'Debugger statements are left in code and can leak runtime state.',
-                        evidence: line.trim(),
-                        suggestion: 'Remove debugger statements before committing code.',
-                        fixAvailable: true
-                    })
-                );
+            if (isRuleEnabled(context.config, 'HYGIENE001') && ts.isDebuggerStatement(node)) {
+                const { line, column } = lineAndColumn(sourceFile, node.getStart());
+                findings.push(buildFinding({
+                    ruleId: 'HYGIENE001', category: 'hygiene', severity: 'LOW', confidence: 'CERTAIN', file: relativePath, line, column,
+                    message: 'Debugger statement found', description: 'Debugger statements are left in code and can leak runtime state.', evidence: node.getText(),
+                    suggestion: 'Remove debugger statements before committing code.', fixAvailable: true
+                }));
             }
+            ts.forEachChild(node, visit);
+        };
+        visit(sourceFile);
 
-            if (isRuleEnabled(context.config, 'HYGIENE002') && /\b(TODO|FIXME|HACK|XXX)\b/.test(line)) {
-                findings.push(
-                    buildFinding({
-                        ruleId: 'HYGIENE002',
-                        category: 'hygiene',
-                        severity: 'LOW',
-                        confidence: 'MEDIUM',
-                        file: relativePath,
-                        line: i + 1,
-                        column: line.search(/\b(TODO|FIXME|HACK|XXX)\b/) + 1,
-                        message: 'Temporary marker found',
-                        description: 'A marker suggests unresolved work or temporary code remains in the repository.',
-                        evidence: line.trim(),
-                        suggestion: 'Track the issue properly or remove the marker before merge.',
-                        fixAvailable: true
-                    })
-                );
+        if (isRuleEnabled(context.config, 'HYGIENE002')) {
+            for (const range of collectCommentRanges(sourceFile)) {
+                const comment = text.slice(range.pos, range.end);
+                const markers = /\b(TODO|FIXME|HACK|XXX)\b/g;
+                for (const match of comment.matchAll(markers)) {
+                    const position = range.pos + (match.index ?? 0);
+                    const { line, column } = lineAndColumn(sourceFile, position);
+                    findings.push(buildFinding({
+                        ruleId: 'HYGIENE002', category: 'hygiene', severity: 'LOW', confidence: 'MEDIUM', file: relativePath, line, column,
+                        message: 'Temporary marker found', description: 'A marker suggests unresolved work or temporary code remains in the repository.',
+                        evidence: match[0], suggestion: 'Track the issue properly or remove the marker before merge.', fixAvailable: true
+                    }));
+                }
             }
         }
     }

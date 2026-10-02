@@ -12,6 +12,7 @@ const WINDOW_STEP = 5;
 interface Token {
     text: string;
     line: number;
+    kind: ts.SyntaxKind;
 }
 
 interface WindowEntry {
@@ -35,11 +36,21 @@ function tokenize(sourceFile: ts.SourceFile, languageVariant: ts.LanguageVariant
 
     while (kind !== ts.SyntaxKind.EndOfFileToken) {
         const pos = scanner.getTokenStart();
-        tokens.push({ text: scanner.getTokenText(), line: sourceFile.getLineAndCharacterOfPosition(pos).line + 1 });
+        tokens.push({ text: scanner.getTokenText(), line: sourceFile.getLineAndCharacterOfPosition(pos).line + 1, kind });
         kind = scanner.scan();
     }
 
     return tokens;
+}
+
+export function normalizeWindow(window: Token[]): string {
+    const identifiers = new Map<string, string>();
+    let nextIdentifier = 0;
+    return window.map((token) => {
+        if (token.kind !== ts.SyntaxKind.Identifier && token.kind !== ts.SyntaxKind.PrivateIdentifier) return token.text;
+        if (!identifiers.has(token.text)) identifiers.set(token.text, `IDENT_${nextIdentifier++}`);
+        return identifiers.get(token.text)!;
+    }).join('\u0001');
 }
 
 function severityForSpan(spanTokens: number, minTokens: number): Severity {
@@ -87,7 +98,7 @@ export function runDuplicationRules(context: RuleContext): Finding[] {
 
         for (let i = 0; i + minTokens <= tokens.length; i += WINDOW_STEP) {
             const window = tokens.slice(i, i + minTokens);
-            const joined = window.map((token) => token.text).join('\u0001');
+            const joined = normalizeWindow(window);
             const hash = crypto.createHash('sha1').update(joined).digest('hex');
             const entry: WindowEntry = {
                 file: relative,

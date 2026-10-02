@@ -1,10 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import ts from 'typescript';
-import { countLines, isGeneratedFile, isRelevantFile, isTestFile, readFileSafe, walkDirectory } from './discovery';
+import { countLines, filterScannedFiles, isTestFile, readFileSafe, walkDirectory } from './discovery';
 import { createProgram } from './ast/parse';
 import { buildModuleGraph } from './moduleGraph';
 import { loadConfig } from './config';
+import { loadIgnorePatterns } from './ignore';
 import type { RuleContext } from './context';
 import { collectFunctionMetrics, runComplexityRules } from './rules/complexity';
 import { runDeadCodeRules } from './rules/deadCode';
@@ -18,6 +19,7 @@ import { runSecurityRules } from './rules/security';
 import { runArchitectureRules } from './rules/architecture';
 import { runHygieneRules } from './rules/hygiene';
 import { computeScores } from './scoring';
+import { isSuppressed } from './suppressions';
 import type { Finding, RepoMetrics, ScanSummary } from './types';
 
 function countClassDeclarations(program: ts.Program, files: string[]): number {
@@ -52,22 +54,21 @@ function estimateDuplicatedLines(findings: Finding[]): number {
 }
 
 export function scanRepository(projectRoot: string): ScanSummary {
+    const config = loadConfig(projectRoot);
     const allFiles = walkDirectory(projectRoot);
-    const files = allFiles.filter((file) => isRelevantFile(file) && !isGeneratedFile(file));
-    const generatedFiles = allFiles.filter((file) => isGeneratedFile(file)).map((file) => path.relative(projectRoot, file).replace(/\\/g, '/'));
+    const { files, generatedFiles } = filterScannedFiles(allFiles, projectRoot, config, loadIgnorePatterns(projectRoot));
 
     const packageJsonPath = path.join(projectRoot, 'package.json');
     const packageJson = fs.existsSync(packageJsonPath) ? JSON.parse(readFileSafe(packageJsonPath)) : null;
 
-    const config = loadConfig(projectRoot);
     const program = createProgram(files);
-    const moduleGraph = buildModuleGraph(projectRoot, files, packageJson);
+    const moduleGraph = buildModuleGraph(projectRoot, files, packageJson, config);
 
     const context: RuleContext = { projectRoot, files, allFiles, program, moduleGraph, config, packageJson };
 
     const functionMetrics = collectFunctionMetrics(context);
 
-    const findings: Finding[] = [
+    const allFindings: Finding[] = [
         ...runDeadCodeRules(context),
         ...runDependencyRules(context),
         ...runComplexityRules(context, functionMetrics),
@@ -80,6 +81,10 @@ export function scanRepository(projectRoot: string): ScanSummary {
         ...runArchitectureRules(context),
         ...runHygieneRules(context)
     ];
+    const findings: Finding[] = allFindings.filter((finding) => {
+        const sourceFile = context.program.getSourceFile(path.resolve(projectRoot, finding.file));
+        return !sourceFile || !isSuppressed(sourceFile, finding.line, finding.ruleId);
+    });
 
     let sourceLOC = 0;
     let testLOC = 0;

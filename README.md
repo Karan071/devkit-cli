@@ -38,9 +38,9 @@ DevKit Repository Scan
 
 A scan runs in a single pass over the repository:
 
-1. **Discovery** — walk the directory tree, skip ignored/generated directories, and select `.js`/`.jsx`/`.ts`/`.tsx`/`.mjs`/`.cjs` files.
+1. **Discovery** — walk the directory tree, apply configured include/exclude and ignore patterns, skip generated files, and select `.js`/`.jsx`/`.ts`/`.tsx`/`.mjs`/`.cjs` files.
 2. **Parse** — build one `ts.Program` (via the TypeScript Compiler API) covering every discovered file, with `noUnusedLocals`/`noUnusedParameters`/`noImplicitAny` enabled so the compiler itself surfaces dead bindings and implicit `any`.
-3. **Module graph** — statically resolve every `import`/`require`/re-export to build an internal dependency graph (edges, reverse edges, entry points, re-export targets).
+3. **Module graph** — resolve imports, `require()`, dynamic `import()`, TypeScript path aliases, and re-exports into an internal dependency graph (edges, reverse edges, entry points, re-export targets).
 4. **Rules** — each rule module receives a shared `RuleContext` (files, program, module graph, config, `package.json`) and returns `Finding[]`.
 5. **Scoring** — findings are weighted by severity × confidence, normalized against repository size, and rolled up into per-category and overall scores.
 6. **Reporting** — the same `ScanSummary` is rendered as colored terminal output, JSON, Markdown, or SARIF.
@@ -95,9 +95,14 @@ Design principle carried over from the project's PRD (`devkit-slop-scanner-final
 | [`src/cli.ts`](src/cli.ts) | Commander-based CLI entry point; wires commands to the scanner and reporters. |
 | [`src/scanner.ts`](src/scanner.ts) | Orchestrates a full scan: discovery → program → module graph → rules → metrics → scoring. |
 | [`src/discovery.ts`](src/discovery.ts) | Directory walking, file filtering, generated/test-file detection, line counting. |
+| [`src/ignore.ts`](src/ignore.ts) | Loads `.gitignore` and `.devkitignore` patterns for scan filtering. |
 | [`src/ast/parse.ts`](src/ast/parse.ts) | Creates the shared `ts.Program` (compiler options, script-kind detection). |
 | [`src/ast/walk.ts`](src/ast/walk.ts) | AST traversal helpers (`forEachNode`, function-like detection, line/column lookup). |
+| [`src/ast/comments.ts`](src/ast/comments.ts) | Collects and caches comment ranges for hygiene checks and suppressions. |
+| [`src/moduleResolution.ts`](src/moduleResolution.ts) | Resolves modules using TypeScript config, path aliases, and a per-scan cache. |
 | [`src/moduleGraph.ts`](src/moduleGraph.ts) | Resolves imports/exports/re-exports into an internal dependency graph; detects entry points and import cycles. |
+| [`src/suppressions.ts`](src/suppressions.ts) | Applies `devkit-disable-next-line` directives to findings. |
+| [`src/cliLogic.ts`](src/cliLogic.ts) | Pure finding-filter and quality-gate logic used by the CLI. |
 | [`src/config.ts`](src/config.ts) | Loads/writes `.devkitrc.json`; rule enable/disable and threshold overrides. |
 | [`src/context.ts`](src/context.ts) | `RuleContext` type shared by every rule module. |
 | [`src/rules.ts`](src/rules.ts) | Declarative catalog of every rule's metadata (id, severity, confidence, docs) — consumed by `devkit rules`/`devkit explain`. |
@@ -116,17 +121,17 @@ Design principle carried over from the project's PRD (`devkit-slop-scanner-final
 | Dependencies | `DEP001`–`DEP003` | [`src/rules/dependencies.ts`](src/rules/dependencies.ts) |
 | Complexity | `COMPLEX001`–`COMPLEX005` | [`src/rules/complexity.ts`](src/rules/complexity.ts) |
 | Duplication | `DUP001` | [`src/rules/duplication.ts`](src/rules/duplication.ts) |
-| Error handling | `ERR001`–`ERR003` | [`src/rules/errorHandling.ts`](src/rules/errorHandling.ts) |
+| Error handling | `ERR001`–`ERR004` | [`src/rules/errorHandling.ts`](src/rules/errorHandling.ts) |
 | Redundant logic | `REDUNDANT001`–`REDUNDANT002` | [`src/rules/redundancy.ts`](src/rules/redundancy.ts) |
 | TypeScript safety | `TS001`–`TS003` | [`src/rules/typescript.ts`](src/rules/typescript.ts) |
 | JavaScript hygiene | `JS001`–`JS002` | [`src/rules/javascript.ts`](src/rules/javascript.ts) |
-| Security | `SEC001`–`SEC007` | [`src/rules/security.ts`](src/rules/security.ts) |
+| Security | `SEC001`–`SEC010` (SEC006 reserved) | [`src/rules/security.ts`](src/rules/security.ts) |
 | Architecture | `ARCH001` | [`src/rules/architecture.ts`](src/rules/architecture.ts) |
 | Hygiene | `HYGIENE001`–`HYGIENE004` | [`src/rules/hygiene.ts`](src/rules/hygiene.ts) |
 
 Run `devkit rules` for the live list, or `devkit explain <RULE_ID>` for a rule's full writeup (why it matters, example, fix classification).
 
-> **Note:** `devkit-slop-scanner-final-prd.md` in the repo root is the original product-requirements document and describes a larger target surface (incremental caching, monorepo-aware scoring, suppression comments, rule presets, a V2 LLM layer, etc.). The table above reflects what is currently implemented in `src/`; treat the PRD as the roadmap, not the current feature set.
+> **Note:** `devkit-slop-scanner-final-prd.md` in the repo root is the original product-requirements document and describes a larger target surface (incremental caching, monorepo-aware scoring, rule presets, a V2 LLM layer, and more). The table above reflects what is currently implemented in `src/`; treat the PRD as the roadmap, not the current feature set. Minimal `devkit-disable-next-line` suppressions are implemented.
 
 ## Project layout
 
@@ -213,7 +218,7 @@ devkit rules               # list every built-in rule (id, title, category)
 devkit explain DEAD010     # full explanation of a single rule
 devkit baseline create      # snapshot the current score to .devkit/baseline.json
 devkit baseline compare     # compare current score against the stored baseline
-devkit fix --dry-run        # list findings flagged as safely auto-fixable
+devkit fix                  # preview findings marked as safe to fix
 ```
 
 ## Configuration
@@ -279,6 +284,14 @@ Security findings are scored and reported separately rather than folded into the
 - **JSON** (`--json` / `--format json`) — the full `ScanSummary` object: score, category scores, every finding, repository metrics.
 - **Markdown** (`--format markdown` / `devkit report`) — category table, top deductions, and a flat findings list, suitable for pasting into a PR description.
 - **SARIF** (`--format sarif`) — standard SARIF 2.1.0, for GitHub code scanning and similar tools.
+
+## Current limitations
+
+- Framework entry-point detection is limited to package metadata, tests, and a basic Next.js convention check. Other React setups such as Vite may need entry files specified through package metadata or imports.
+- `.gitignore` and `.devkitignore` negation patterns (`!pattern`) are skipped; full Git ignore semantics are not implemented.
+- `devkit fix` only previews findings marked as safe. It does not modify files.
+- `devkit baseline compare` compares the overall score only; it does not report newly added or resolved findings.
+- DevKit has no rule presets, React-specific or test-quality rules, configuration analysis, incremental cache, or monorepo-aware scoring.
 
 ## CI/CD integration
 

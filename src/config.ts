@@ -31,7 +31,7 @@ export const defaultConfig: DevkitConfig = {
         name: 'my-project'
     },
     scan: {
-        include: ['src/**', 'packages/**'],
+        include: ['**/*'],
         exclude: ['node_modules/**', 'dist/**', 'coverage/**', '.git/**', '.devkit/**']
     },
     rules: {}
@@ -51,6 +51,11 @@ export function loadConfig(projectRoot: string): DevkitConfig {
         return {
             ...defaultConfig,
             ...parsed,
+            project: { ...defaultConfig.project, ...(parsed.project ?? {}) },
+            scan: { ...defaultConfig.scan, ...(parsed.scan ?? {}) },
+            architecture: parsed.architecture
+                ? { ...parsed.architecture, layers: { ...(defaultConfig.architecture?.layers ?? {}), ...(parsed.architecture.layers ?? {}) } }
+                : defaultConfig.architecture,
             rules: { ...defaultConfig.rules, ...(parsed.rules ?? {}) }
         };
     } catch {

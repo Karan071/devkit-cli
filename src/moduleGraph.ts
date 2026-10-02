@@ -2,7 +2,10 @@ import path from 'node:path';
 import ts from 'typescript';
 import { SOURCE_EXTENSIONS, isTestFile, readFileSafe } from './discovery';
 import { parseSourceFile } from './ast/parse';
-import { lineAndColumn } from './ast/walk';
+import { forEachNode, lineAndColumn } from './ast/walk';
+import type { DevkitConfig } from './config';
+import { matchesAnyGlob } from './glob';
+import { createResolutionContext, resolveSpecifier, type SpecifierKind } from './moduleResolution';
 
 export interface ImportInfo {
     specifier: string;
@@ -13,6 +16,7 @@ export interface ImportInfo {
     hasNamespaceImport: boolean;
     isSideEffectOnly: boolean;
     line: number;
+    kind: SpecifierKind;
 }
 
 export interface ExportInfo {
@@ -29,136 +33,86 @@ export interface ModuleGraph {
     reExportAllTargets: Map<string, Set<string>>;
     entryPoints: Set<string>;
     fileSet: Set<string>;
-}
-
-function resolveRelativeImport(fromFile: string, specifier: string, fileSet: Set<string>): string | null {
-    const baseDir = path.dirname(fromFile);
-    const candidateBase = path.resolve(baseDir, specifier);
-
-    const directCandidates = [candidateBase, ...[...SOURCE_EXTENSIONS].map((ext) => candidateBase + ext)];
-    for (const candidate of directCandidates) {
-        if (fileSet.has(candidate)) {
-            return candidate;
-        }
-    }
-
-    const indexCandidates = [...SOURCE_EXTENSIONS].map((ext) => path.join(candidateBase, `index${ext}`));
-    for (const candidate of indexCandidates) {
-        if (fileSet.has(candidate)) {
-            return candidate;
-        }
-    }
-
-    return null;
+    dynamicRequireHints: Set<string>;
 }
 
 function extractImportsAndExports(
     file: string,
+    projectRoot: string,
     sourceFile: ts.SourceFile,
-    fileSet: Set<string>
-): { imports: ImportInfo[]; exports: ExportInfo[]; reExportAllTargets: string[] } {
+    fileSet: Set<string>,
+    resolutionContext: ReturnType<typeof createResolutionContext>
+): { imports: ImportInfo[]; exports: ExportInfo[]; reExportAllTargets: string[]; dynamicRequireHints: string[] } {
     const imports: ImportInfo[] = [];
     const exports: ExportInfo[] = [];
     const reExportAllTargets: string[] = [];
+    const dynamicRequireHints: string[] = [];
+
+    const addImport = (
+        specifier: string,
+        kind: SpecifierKind,
+        line: number,
+        details: Partial<Pick<ImportInfo, 'namedImports' | 'hasDefaultImport' | 'hasNamespaceImport' | 'isSideEffectOnly'>> = {}
+    ): ImportInfo => {
+        const info: ImportInfo = {
+            specifier,
+            resolved: resolveSpecifier(file, specifier, kind, fileSet, resolutionContext),
+            isRelative: specifier.startsWith('.'),
+            namedImports: details.namedImports ?? [],
+            hasDefaultImport: details.hasDefaultImport ?? false,
+            hasNamespaceImport: details.hasNamespaceImport ?? false,
+            isSideEffectOnly: details.isSideEffectOnly ?? false,
+            line,
+            kind
+        };
+        imports.push(info);
+        return info;
+    };
 
     for (const statement of sourceFile.statements) {
         if (ts.isImportDeclaration(statement) && ts.isStringLiteral(statement.moduleSpecifier)) {
-            const specifier = statement.moduleSpecifier.text;
-            const isRelative = specifier.startsWith('.');
-            const resolved = isRelative ? resolveRelativeImport(file, specifier, fileSet) : null;
-            const line = lineAndColumn(sourceFile, statement.getStart()).line;
-
+            const clause = statement.importClause;
             const namedImports: string[] = [];
             let hasDefaultImport = false;
             let hasNamespaceImport = false;
-
-            const clause = statement.importClause;
             if (clause) {
-                if (clause.name) {
-                    hasDefaultImport = true;
-                }
-                if (clause.namedBindings) {
-                    if (ts.isNamespaceImport(clause.namedBindings)) {
-                        hasNamespaceImport = true;
-                    } else if (ts.isNamedImports(clause.namedBindings)) {
-                        for (const element of clause.namedBindings.elements) {
-                            namedImports.push((element.propertyName ?? element.name).text);
-                        }
-                    }
+                hasDefaultImport = !!clause.name;
+                if (clause.namedBindings && ts.isNamespaceImport(clause.namedBindings)) hasNamespaceImport = true;
+                else if (clause?.namedBindings && ts.isNamedImports(clause.namedBindings)) {
+                    for (const element of clause.namedBindings.elements) namedImports.push((element.propertyName ?? element.name).text);
                 }
             }
-
-            imports.push({
-                specifier,
-                resolved,
-                isRelative,
-                namedImports,
-                hasDefaultImport,
-                hasNamespaceImport,
-                isSideEffectOnly: !clause,
-                line
+            addImport(statement.moduleSpecifier.text, 'import', lineAndColumn(sourceFile, statement.getStart()).line, {
+                namedImports, hasDefaultImport, hasNamespaceImport, isSideEffectOnly: !clause
             });
             continue;
         }
 
         if (ts.isImportEqualsDeclaration(statement) && ts.isExternalModuleReference(statement.moduleReference)) {
             const expr = statement.moduleReference.expression;
-            if (ts.isStringLiteral(expr)) {
-                const specifier = expr.text;
-                const isRelative = specifier.startsWith('.');
-                imports.push({
-                    specifier,
-                    resolved: isRelative ? resolveRelativeImport(file, specifier, fileSet) : null,
-                    isRelative,
-                    namedImports: [],
-                    hasDefaultImport: false,
-                    hasNamespaceImport: true,
-                    isSideEffectOnly: false,
-                    line: lineAndColumn(sourceFile, statement.getStart()).line
-                });
-            }
+            if (ts.isStringLiteral(expr)) addImport(expr.text, 'importEquals', lineAndColumn(sourceFile, statement.getStart()).line, { hasNamespaceImport: true });
             continue;
         }
 
         if (ts.isExportDeclaration(statement)) {
             const line = lineAndColumn(sourceFile, statement.getStart()).line;
-
             if (statement.moduleSpecifier && ts.isStringLiteral(statement.moduleSpecifier)) {
                 const specifier = statement.moduleSpecifier.text;
-                const isRelative = specifier.startsWith('.');
-                const resolved = isRelative ? resolveRelativeImport(file, specifier, fileSet) : null;
-
                 if (!statement.exportClause) {
-                    if (resolved) {
-                        reExportAllTargets.push(resolved);
-                    }
+                    const info = addImport(specifier, 'exportFrom', line, { hasNamespaceImport: true });
+                    if (info.resolved) reExportAllTargets.push(info.resolved);
                     continue;
                 }
-
                 if (ts.isNamedExports(statement.exportClause)) {
-                    for (const element of statement.exportClause.elements) {
-                        exports.push({ name: element.name.text, kind: 'named', line });
-                    }
-                    if (resolved) {
-                        imports.push({
-                            specifier,
-                            resolved,
-                            isRelative,
-                            namedImports: statement.exportClause.elements.map((element) => (element.propertyName ?? element.name).text),
-                            hasDefaultImport: false,
-                            hasNamespaceImport: false,
-                            isSideEffectOnly: false,
-                            line
-                        });
-                    }
+                    for (const element of statement.exportClause.elements) exports.push({ name: element.name.text, kind: 'named', line });
+                    addImport(specifier, 'exportFrom', line, {
+                        namedImports: statement.exportClause.elements.map((element) => (element.propertyName ?? element.name).text)
+                    });
                 }
                 continue;
             }
-
             if (statement.exportClause && ts.isNamedExports(statement.exportClause)) {
-                for (const element of statement.exportClause.elements) {
-                    exports.push({ name: element.name.text, kind: 'named', line });
-                }
+                for (const element of statement.exportClause.elements) exports.push({ name: element.name.text, kind: 'named', line });
             }
             continue;
         }
@@ -170,41 +124,62 @@ function extractImportsAndExports(
 
         const modifiers = ts.canHaveModifiers(statement) ? ts.getModifiers(statement) : undefined;
         const isExported = modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) ?? false;
-        if (!isExported) {
-            continue;
-        }
-
+        if (!isExported) continue;
         const isDefault = modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.DefaultKeyword) ?? false;
         const line = lineAndColumn(sourceFile, statement.getStart()).line;
-
-        if (isDefault) {
-            exports.push({ name: 'default', kind: 'default', line });
-            continue;
-        }
-
-        if (ts.isFunctionDeclaration(statement) && statement.name) {
-            exports.push({ name: statement.name.text, kind: 'function', line });
-        } else if (ts.isClassDeclaration(statement) && statement.name) {
-            exports.push({ name: statement.name.text, kind: 'class', line });
-        } else if (ts.isInterfaceDeclaration(statement)) {
-            exports.push({ name: statement.name.text, kind: 'interface', line });
-        } else if (ts.isTypeAliasDeclaration(statement)) {
-            exports.push({ name: statement.name.text, kind: 'typeAlias', line });
-        } else if (ts.isEnumDeclaration(statement)) {
-            exports.push({ name: statement.name.text, kind: 'enum', line });
-        } else if (ts.isVariableStatement(statement)) {
+        if (isDefault) exports.push({ name: 'default', kind: 'default', line });
+        else if (ts.isFunctionDeclaration(statement) && statement.name) exports.push({ name: statement.name.text, kind: 'function', line });
+        else if (ts.isClassDeclaration(statement) && statement.name) exports.push({ name: statement.name.text, kind: 'class', line });
+        else if (ts.isInterfaceDeclaration(statement)) exports.push({ name: statement.name.text, kind: 'interface', line });
+        else if (ts.isTypeAliasDeclaration(statement)) exports.push({ name: statement.name.text, kind: 'typeAlias', line });
+        else if (ts.isEnumDeclaration(statement)) exports.push({ name: statement.name.text, kind: 'enum', line });
+        else if (ts.isVariableStatement(statement)) {
             for (const declaration of statement.declarationList.declarations) {
-                if (ts.isIdentifier(declaration.name)) {
-                    exports.push({ name: declaration.name.text, kind: 'variable', line });
-                }
+                if (ts.isIdentifier(declaration.name)) exports.push({ name: declaration.name.text, kind: 'variable', line });
             }
         }
     }
 
-    return { imports, exports, reExportAllTargets };
+    const dynamicDir = path.relative(projectRoot, path.dirname(file)).replace(/\\/g, '/') || '.';
+    forEachNode(sourceFile, (node) => {
+        if (!ts.isCallExpression(node)) return;
+        const isRequire = ts.isIdentifier(node.expression) && node.expression.text === 'require';
+        const isDynamicImport = node.expression.kind === ts.SyntaxKind.ImportKeyword;
+        if (!isRequire && !isDynamicImport) return;
+        const kind: SpecifierKind = isRequire ? 'require' : 'dynamicImport';
+        const argument = node.arguments[0];
+        if (!argument || !(ts.isStringLiteral(argument) || ts.isNoSubstitutionTemplateLiteral(argument))) {
+            dynamicRequireHints.push(dynamicDir);
+            return;
+        }
+
+        let namedImports: string[] = [];
+        let hasNamespaceImport = true;
+        let isSideEffectOnly = false;
+        let parent: ts.Node | undefined = node.parent;
+        if (ts.isAwaitExpression(parent)) parent = parent.parent;
+        if (ts.isVariableDeclaration(parent) && parent.initializer && (parent.initializer === node || (ts.isAwaitExpression(parent.initializer) && parent.initializer.expression === node))) {
+            if (ts.isObjectBindingPattern(parent.name)) {
+                const hasStaticProperties = parent.name.elements.every((element) => {
+                    if (element.dotDotDotToken) return false;
+                    const property = element.propertyName ?? element.name;
+                    return ts.isIdentifier(property) || ts.isStringLiteral(property) || ts.isNumericLiteral(property);
+                });
+                if (hasStaticProperties) {
+                    namedImports = parent.name.elements.map((element) => (element.propertyName ?? element.name).getText(sourceFile).replace(/^['"]|['"]$/g, ''));
+                    hasNamespaceImport = false;
+                }
+            }
+        } else if (isRequire && ts.isExpressionStatement(node.parent)) {
+            isSideEffectOnly = true;
+        }
+        addImport(argument.text, kind, lineAndColumn(sourceFile, node.getStart()).line, { namedImports, hasNamespaceImport, isSideEffectOnly });
+    });
+
+    return { imports, exports, reExportAllTargets, dynamicRequireHints };
 }
 
-function resolveEntryPoints(projectRoot: string, files: string[], packageJson: Record<string, unknown> | null): Set<string> {
+function resolveEntryPoints(projectRoot: string, files: string[], packageJson: Record<string, unknown> | null, config: DevkitConfig): Set<string> {
     const entryPoints = new Set<string>();
     const fileSet = new Set(files);
 
@@ -250,7 +225,40 @@ function resolveEntryPoints(projectRoot: string, files: string[], packageJson: R
                 scanStringForPaths(command);
             }
         }
+
+        const addExportTargets = (value: unknown): void => {
+            if (typeof value === 'string') {
+                if (value.startsWith('./')) addFromRelativePath(value.slice(2));
+            } else if (value && typeof value === 'object') {
+                for (const nested of Object.values(value as Record<string, unknown>)) addExportTargets(nested);
+            }
+        };
+        addExportTargets(packageJson.exports);
+
+        const dependencies = {
+            ...((packageJson.dependencies as Record<string, string> | undefined) ?? {}),
+            ...((packageJson.devDependencies as Record<string, string> | undefined) ?? {})
+        };
+        if (Object.prototype.hasOwnProperty.call(dependencies, 'next')) {
+            const patterns = [
+                'pages/**/*.js', 'pages/**/*.jsx', 'pages/**/*.ts', 'pages/**/*.tsx',
+                'app/**/page.js', 'app/**/page.jsx', 'app/**/page.ts', 'app/**/page.tsx',
+                'app/**/layout.js', 'app/**/layout.jsx', 'app/**/layout.ts', 'app/**/layout.tsx',
+                'app/**/route.js', 'app/**/route.jsx', 'app/**/route.ts', 'app/**/route.tsx',
+                'app/**/loading.js', 'app/**/loading.jsx', 'app/**/loading.ts', 'app/**/loading.tsx',
+                'app/**/error.js', 'app/**/error.jsx', 'app/**/error.ts', 'app/**/error.tsx',
+                'app/**/not-found.js', 'app/**/not-found.jsx', 'app/**/not-found.ts', 'app/**/not-found.tsx',
+                'app/**/middleware.js', 'app/**/middleware.jsx', 'app/**/middleware.ts', 'app/**/middleware.tsx'
+            ];
+            for (const file of files) {
+                const relative = path.relative(projectRoot, file).replace(/\\/g, '/');
+                if (matchesAnyGlob(relative, patterns)) entryPoints.add(file);
+            }
+        }
     }
+
+    // Keep the parameter explicit: framework and custom entry conventions are config-dependent.
+    void config;
 
     for (const file of files) {
         if (isTestFile(file)) {
@@ -264,7 +272,8 @@ function resolveEntryPoints(projectRoot: string, files: string[], packageJson: R
 export function buildModuleGraph(
     projectRoot: string,
     files: string[],
-    packageJson: Record<string, unknown> | null
+    packageJson: Record<string, unknown> | null,
+    config: DevkitConfig
 ): ModuleGraph {
     const fileSet = new Set(files);
     const importsByFile = new Map<string, ImportInfo[]>();
@@ -272,11 +281,14 @@ export function buildModuleGraph(
     const edges = new Map<string, Set<string>>();
     const reverseEdges = new Map<string, Set<string>>();
     const reExportAllTargets = new Map<string, Set<string>>();
+    const dynamicRequireHints = new Set<string>();
+    const resolutionContext = createResolutionContext(projectRoot);
 
     for (const file of files) {
         const text = readFileSafe(file);
         const sourceFile = parseSourceFile(file, text);
-        const { imports, exports, reExportAllTargets: reExportTargets } = extractImportsAndExports(file, sourceFile, fileSet);
+        const { imports, exports, reExportAllTargets: reExportTargets, dynamicRequireHints: hints } = extractImportsAndExports(file, projectRoot, sourceFile, fileSet, resolutionContext);
+        hints.forEach((hint) => dynamicRequireHints.add(hint));
 
         importsByFile.set(file, imports);
         exportsByFile.set(file, exports);
@@ -303,9 +315,9 @@ export function buildModuleGraph(
         edges.set(file, edgeSet);
     }
 
-    const entryPoints = resolveEntryPoints(projectRoot, files, packageJson);
+    const entryPoints = resolveEntryPoints(projectRoot, files, packageJson, config);
 
-    return { importsByFile, exportsByFile, edges, reverseEdges, reExportAllTargets, entryPoints, fileSet };
+    return { importsByFile, exportsByFile, edges, reverseEdges, reExportAllTargets, entryPoints, fileSet, dynamicRequireHints };
 }
 
 export function findImportCycles(graph: ModuleGraph): string[][] {

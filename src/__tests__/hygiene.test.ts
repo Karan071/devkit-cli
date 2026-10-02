@@ -22,6 +22,13 @@ describe('hygiene rules', () => {
         expect(findingsFor(summary.findings, 'HYGIENE002').length).toBeGreaterThan(0);
     });
 
+    it('does not match console calls or TODO markers inside string literals', () => {
+        dir = makeFixture({ 'src/index.ts': `const example = "console.log('debug')";\nconst marker = 'TODO';\nconst debuggerText = 'debugger;';` });
+        const findings = scanRepository(dir).findings;
+        expect(findingsFor(findings, 'HYGIENE001')).toHaveLength(0);
+        expect(findingsFor(findings, 'HYGIENE002')).toHaveLength(0);
+    });
+
     it('flags a committed backup file', () => {
         dir = makeFixture({
             'src/index.ts': `export function run() { return 1; }\n`,

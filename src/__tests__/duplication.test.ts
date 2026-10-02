@@ -31,4 +31,13 @@ describe('duplication detection', () => {
         const summary = scanRepository(dir);
         expect(findingsFor(summary.findings, 'DUP001').length).toBe(0);
     });
+
+    it('recognizes duplicate blocks after local identifiers are renamed', () => {
+        const makeBlock = (prefix: string) => Array.from({ length: 50 }, (_, i) => `    ${prefix}Total = ${prefix}Total + ${prefix}Value * ${i} - ${prefix}Offset;`).join('\n');
+        dir = makeFixture({
+            'src/a.ts': `export function computeA(aTotal: number, aValue: number, aOffset: number) {\n${makeBlock('a')}\n    return aTotal;\n}`,
+            'src/b.ts': `export function computeB(bTotal: number, bValue: number, bOffset: number) {\n${makeBlock('b')}\n    return bTotal;\n}`
+        });
+        expect(findingsFor(scanRepository(dir).findings, 'DUP001').length).toBeGreaterThan(0);
+    });
 });

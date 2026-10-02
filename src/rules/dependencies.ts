@@ -1,6 +1,5 @@
 import { builtinModules } from 'node:module';
 import path from 'node:path';
-import ts from 'typescript';
 import type { RuleContext } from '../context';
 import type { Finding } from '../types';
 import { buildFinding } from '../finding';
@@ -16,25 +15,6 @@ function packageNameFromSpecifier(specifier: string): string {
         return parts.slice(0, 2).join('/');
     }
     return specifier.split('/')[0];
-}
-
-function collectRequireAndDynamicImportSpecifiers(sourceFile: ts.SourceFile): string[] {
-    const specifiers: string[] = [];
-
-    const visit = (node: ts.Node): void => {
-        if (ts.isCallExpression(node)) {
-            const isRequire = ts.isIdentifier(node.expression) && node.expression.text === 'require';
-            const isDynamicImport = node.expression.kind === ts.SyntaxKind.ImportKeyword;
-
-            if ((isRequire || isDynamicImport) && node.arguments.length > 0 && ts.isStringLiteral(node.arguments[0])) {
-                specifiers.push(node.arguments[0].text);
-            }
-        }
-        ts.forEachChild(node, visit);
-    };
-
-    visit(sourceFile);
-    return specifiers;
 }
 
 function findDependencyLine(packageJsonText: string, dependencyName: string): number {
@@ -78,15 +58,6 @@ export function runDependencyRules(context: RuleContext): Finding[] {
         for (const importInfo of imports) {
             if (!importInfo.isRelative && !importInfo.resolved) {
                 usedPackageNames.add(packageNameFromSpecifier(importInfo.specifier));
-            }
-        }
-    }
-
-    for (const file of context.files) {
-        const sourceFile = context.program.getSourceFile(file) ?? ts.createSourceFile(file, readFileSafe(file), ts.ScriptTarget.ES2022, true);
-        for (const specifier of collectRequireAndDynamicImportSpecifiers(sourceFile)) {
-            if (!specifier.startsWith('.')) {
-                usedPackageNames.add(packageNameFromSpecifier(specifier));
             }
         }
     }

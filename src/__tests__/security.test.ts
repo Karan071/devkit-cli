@@ -16,6 +16,21 @@ describe('security rules', () => {
         expect(findingsFor(summary.findings, 'SEC001').length).toBeGreaterThan(0);
     });
 
+    it.each([
+        ['AWS', `const credential = "AKIAIOSFODNN7EXAMPLE";`],
+        ['GitHub', `const credential = "ghp_abcdefghijklmnopqrstuvwxyz1234567890";`],
+        ['PEM', `const value = "-----BEGIN PRIVATE KEY-----";`],
+        ['JWT', `const value = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signaturepayload";`]
+    ])('detects a %s-shaped credential regardless of variable name', (_label, source) => {
+        dir = makeFixture({ 'src/index.ts': source });
+        expect(findingsFor(scanRepository(dir).findings, 'SEC001').length).toBeGreaterThan(0);
+    });
+
+    it('suppresses only heuristic secret matches in test fixtures', () => {
+        dir = makeFixture({ 'src/example.test.ts': `const TOKEN = "this-is-a-long-but-not-provider-specific-test-string";` });
+        expect(findingsFor(scanRepository(dir).findings, 'SEC001')).toHaveLength(0);
+    });
+
     it('flags eval usage', () => {
         dir = makeFixture({ 'src/index.ts': `export function run(code: string) {\n    return eval(code);\n}\n` });
         const summary = scanRepository(dir);
@@ -38,12 +53,47 @@ describe('security rules', () => {
         expect(findingsFor(summary.findings, 'SEC003').length).toBe(0);
     });
 
+    it('flags a one-hop dynamically built command passed through a variable', () => {
+        dir = makeFixture({ 'src/index.ts': `import { exec } from 'node:child_process';\nexport function run(input: string) { const command = 'echo ' + input; exec(command); }` });
+        expect(findingsFor(scanRepository(dir).findings, 'SEC003').length).toBeGreaterThan(0);
+    });
+
+    it('flags shell:true for spawn-family calls', () => {
+        dir = makeFixture({ 'src/index.ts': `import { spawn } from 'node:child_process';\nspawn('sh', ['-c', input], { shell: true });` });
+        expect(findingsFor(scanRepository(dir).findings, 'SEC003').length).toBeGreaterThan(0);
+    });
+
     it('flags unsafe innerHTML assignment', () => {
         dir = makeFixture({
             'src/index.ts': `export function run(el: { innerHTML: string }, content: string) {\n    el.innerHTML = content;\n}\n`
         });
         const summary = scanRepository(dir);
         expect(findingsFor(summary.findings, 'SEC004').length).toBeGreaterThan(0);
+    });
+
+    it('flags insertAdjacentHTML calls', () => {
+        dir = makeFixture({ 'src/index.ts': `export function render(el: Element, html: string) { el.insertAdjacentHTML('beforeend', html); }` });
+        expect(findingsFor(scanRepository(dir).findings, 'SEC004').length).toBeGreaterThan(0);
+    });
+
+    it.each(['src/template.vue', 'src/template.html'])('flags unsafe HTML bindings in %s', (file) => {
+        dir = makeFixture({ [file]: `<div v-html="value"></div>\n<div [innerHTML]="other"></div>` });
+        expect(findingsFor(scanRepository(dir).findings, 'SEC004').length).toBeGreaterThan(0);
+    });
+
+    it('flags dynamically constructed SQL queries', () => {
+        dir = makeFixture({ 'src/index.ts': 'db.query(`SELECT * FROM users WHERE id = ${id}`);' });
+        expect(findingsFor(scanRepository(dir).findings, 'SEC008').length).toBeGreaterThan(0);
+    });
+
+    it('flags request data passed into filesystem paths', () => {
+        dir = makeFixture({ 'src/index.ts': "fs.readFileSync(path.join(root, req.params.file));" });
+        expect(findingsFor(scanRepository(dir).findings, 'SEC009').length).toBeGreaterThan(0);
+    });
+
+    it('flags unsafe deserialization and VM execution calls', () => {
+        dir = makeFixture({ 'src/index.ts': "import { unserialize } from 'node-serialize';\nunserialize(input);\nvm.runInNewContext(input);" });
+        expect(findingsFor(scanRepository(dir).findings, 'SEC010').length).toBeGreaterThan(0);
     });
 
     it('flags weak hash algorithms', () => {

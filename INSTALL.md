@@ -116,7 +116,7 @@ npx devkit baseline compare
 Preview findings that DevKit marks as safe to fix:
 
 ```bash
-npx devkit fix --dry-run
+npx devkit fix
 ```
 
 ## Run DevKit's own checks

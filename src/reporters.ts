@@ -128,7 +128,7 @@ export function formatTerminal(summary: ScanSummary): string {
     lines.push(`  ${color.dim('devkit scan --format json')}      full machine-readable output`);
     lines.push(`  ${color.dim('devkit scan --category <name>')}  focus on one category`);
     lines.push(`  ${color.dim('devkit explain <RULE_ID>')}       why a rule exists and how to fix it`);
-    lines.push(`  ${color.dim('devkit fix --dry-run')}           preview safe automatic fixes`);
+    lines.push(`  ${color.dim('devkit fix')}                    preview findings marked safe to fix`);
     lines.push('');
 
     return lines.join('\n');

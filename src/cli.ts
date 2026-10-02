@@ -9,7 +9,7 @@ import { formatBaselineCompare, formatJson, formatMarkdown, formatMetrics, forma
 import { scanRepository } from './scanner';
 import { computeScores } from './scoring';
 import { Spinner, waitForNextTick } from './terminal';
-import type { Severity } from './types';
+import { determineExitFailure, filterFindings, isKnownSeverity } from './cliLogic';
 
 async function runWithSpinner<T>(text: string, task: () => T): Promise<T> {
     const spinner = new Spinner(text);
@@ -26,14 +26,6 @@ const program = new Command();
 
 program.name('devkit').description('Deterministic repository-quality scanner for JavaScript and TypeScript projects').version('0.1.0');
 
-const SEVERITY_RANK: Record<Severity, number> = {
-    INFO: 0,
-    LOW: 1,
-    MEDIUM: 2,
-    HIGH: 3,
-    CRITICAL: 4
-};
-
 program
     .command('init')
     .description('Create a default DevKit config file in the current project')
@@ -45,13 +37,7 @@ program
 async function runScan(options: { json?: boolean; format?: string; category?: string; severity?: string; minScore?: string; failOn?: string }): Promise<boolean> {
     const summary = await runWithSpinner('Scanning repository...', () => scanRepository(process.cwd()));
 
-    let filteredFindings = summary.findings;
-    if (options.category) {
-        filteredFindings = filteredFindings.filter((finding) => finding.category.toLowerCase() === options.category!.toLowerCase());
-    }
-    if (options.severity) {
-        filteredFindings = filteredFindings.filter((finding) => finding.severity.toLowerCase() === options.severity!.toLowerCase());
-    }
+    const filteredFindings = filterFindings(summary.findings, options);
 
     const filteredSummary =
         filteredFindings.length === summary.findings.length
@@ -74,26 +60,8 @@ async function runScan(options: { json?: boolean; format?: string; category?: st
 
     console.log(output);
 
-    let failed = false;
-
-    if (options.minScore !== undefined) {
-        const minimum = Number(options.minScore);
-        if (filteredSummary.score < minimum) {
-            failed = true;
-        }
-    }
-
-    if (options.failOn) {
-        const threshold = options.failOn.toUpperCase() as Severity;
-        if (!(threshold in SEVERITY_RANK)) {
-            console.error(`Unknown severity: ${options.failOn}`);
-            failed = true;
-        } else if (filteredFindings.some((finding) => SEVERITY_RANK[finding.severity] >= SEVERITY_RANK[threshold])) {
-            failed = true;
-        }
-    }
-
-    return failed;
+    if (options.failOn && !isKnownSeverity(options.failOn)) console.error(`Unknown severity: ${options.failOn}`);
+    return determineExitFailure(filteredSummary, options);
 }
 
 program
@@ -200,14 +168,12 @@ program
 
 program
     .command('fix')
-    .description('Preview safe automatic repairs for common, low-risk findings')
-    .option('--dry-run', 'Preview changes without writing files')
-    .action(async (options) => {
+    .description('Preview findings marked as safe to fix')
+    .action(async () => {
         const summary = await runWithSpinner('Scanning repository...', () => scanRepository(process.cwd()));
         const safeFixes = summary.findings.filter((finding) => finding.fixAvailable);
-        const mode = options.dryRun ? 'dry-run preview' : 'write mode';
 
-        console.log(`Safe fix preview (${mode})`);
+        console.log('Safe fix preview');
         if (safeFixes.length === 0) {
             console.log('No auto-fixable findings were detected.');
             return;
