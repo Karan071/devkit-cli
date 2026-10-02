@@ -166,7 +166,7 @@ cli-tool/
 
 ## Setup
 
-Requires Node.js (for the TypeScript compiler API and `fs`/`path` usage — any reasonably current LTS version works).
+Requires Node.js `^22.12.0 || ^24.0.0 || >=26.0.0` (the version range the test suite's dependencies require; Node 18 and 20 are not supported).
 
 ```bash
 # install dependencies
