@@ -5,10 +5,13 @@ export function globToRegExp(pattern: string): RegExp {
         const char = pattern[i];
 
         if (char === '*' && pattern[i + 1] === '*') {
-            regex += '.*';
             i += 1;
             if (pattern[i + 1] === '/') {
+                // `**/` spans zero or more whole directories, so `**/lib` must not match `mylib`.
+                regex += '(?:.*/)?';
                 i += 1;
+            } else {
+                regex += '.*';
             }
             continue;
         }

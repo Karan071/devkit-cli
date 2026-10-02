@@ -64,27 +64,41 @@ function hasPathSanitizer(node: ts.Node): boolean {
     return /(?:normalize|sanitize|safePath|allowedPaths|allowlist)\s*\(/i.test(node.getText());
 }
 
+// Unquoted `key: value` / `KEY=value` assignments as found in .env, YAML, TOML, INI and properties files.
+const CONFIG_SECRET_PATTERN = /\b([A-Za-z0-9_.-]*(?:api[_-]?key|secret|token|passw(?:or)?d|private[_-]?key|access[_-]?key|client[_-]?secret|auth)[A-Za-z0-9_.-]*)\b["']?\s*[:=]\s*["']?([^\s"',;}]{8,})/i;
+const PLACEHOLDER_VALUE = /example|sample|dummy|placeholder|changeme|your[_-]|xxxx|<[^>]*>|\$\{|\{\{|process\.env|^\*+$/i;
+const DOCUMENTATION_FILE = /\.(?:md|mdx|markdown|rst|txt|adoc)$/i;
+
 function runSecretScan(context: RuleContext): Finding[] {
     if (!isRuleEnabled(context.config, 'SEC001')) return [];
 
     const findings: Finding[] = [];
+    const sourceFiles = new Set(context.files);
 
-    for (const file of context.files) {
+    for (const file of [...context.files, ...context.textFiles]) {
         const text = readFileSafe(file);
         const relativePath = path.relative(context.projectRoot, file).replace(/\\/g, '/');
         const lines = text.split(/\r\n|\r|\n/);
         const isTestFixture = isTestFile(relativePath) || /(?:^|\/)(?:fixtures?|__mocks__)(?:\/|$)/i.test(relativePath);
+        const isSource = sourceFiles.has(file);
+        const isDocumentation = DOCUMENTATION_FILE.test(relativePath);
 
         for (let i = 0; i < lines.length; i += 1) {
             const providerPattern = SECRET_PATTERNS.find((pattern) => pattern.regex.test(lines[i]));
-            const fallbackMatch = !providerPattern && !isTestFixture ? lines[i].match(SECRET_PATTERN) : null;
-            if (providerPattern || (fallbackMatch && looksHighEntropy(fallbackMatch[2]))) {
+            let fallbackMatch: RegExpMatchArray | null = null;
+            if (!providerPattern && !isTestFixture && !isDocumentation) {
+                const candidate = lines[i].match(isSource ? SECRET_PATTERN : CONFIG_SECRET_PATTERN);
+                if (candidate && !PLACEHOLDER_VALUE.test(candidate[2])) fallbackMatch = candidate;
+            }
+            if (providerPattern || (fallbackMatch && looksHighEntropy(fallbackMatch[2], isSource ? 20 : 16))) {
+                // Fixtures and docs legitimately carry example credentials; keep them visible but discounted.
+                const discounted = isTestFixture || isDocumentation || /EXAMPLE/.test(lines[i]);
                 findings.push(
                     buildFinding({
                         ruleId: 'SEC001',
                         category: 'security',
                         severity: 'HIGH',
-                        confidence: providerPattern ? 'HIGH' : 'MEDIUM',
+                        confidence: discounted ? 'LOW' : providerPattern ? 'HIGH' : 'MEDIUM',
                         file: relativePath,
                         line: i + 1,
                         column: providerPattern ? lines[i].search(providerPattern.regex) + 1 : lines[i].indexOf(fallbackMatch![0]) + 1,
@@ -332,8 +346,8 @@ function runAstSecurityChecks(context: RuleContext): Finding[] {
 function scanTemplateFilesForUnsafeBindings(context: RuleContext): Finding[] {
     if (!isRuleEnabled(context.config, 'SEC004')) return [];
     const findings: Finding[] = [];
-    for (const file of context.allFiles) {
-        if (!/\.(?:vue|html)$/i.test(file)) continue;
+    for (const file of context.textFiles) {
+        if (!/\.(?:vue|html|svelte)$/i.test(file)) continue;
         const text = readFileSafe(file);
         const lines = text.split(/\r\n|\r|\n/);
         const relativePath = path.relative(context.projectRoot, file).replace(/\\/g, '/');

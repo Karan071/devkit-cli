@@ -156,11 +156,11 @@ function detectUnusedExports(context: RuleContext): Finding[] {
     for (const [file, exports] of moduleGraph.exportsByFile) {
         if (exports.length === 0) continue;
         if (moduleGraph.entryPoints.has(file)) continue;
-        if (isTestFile(file)) continue;
+        const relativePath = path.relative(context.projectRoot, file).replace(/\\/g, '/');
+        if (isTestFile(relativePath)) continue;
         if (fullyUsedFiles.has(file)) continue;
 
         const used = usedExportsByFile.get(file) ?? new Set<string>();
-        const relativePath = path.relative(context.projectRoot, file).replace(/\\/g, '/');
         const dynamicHint = hasDynamicRequireHint(context, relativePath);
 
         for (const exportInfo of exports) {
@@ -199,13 +199,12 @@ function detectUnusedFiles(context: RuleContext): Finding[] {
     const { moduleGraph } = context;
 
     for (const file of context.files) {
-        if (isTestFile(file)) continue;
+        const relativePath = path.relative(context.projectRoot, file).replace(/\\/g, '/');
+        if (isTestFile(relativePath)) continue;
         if (moduleGraph.entryPoints.has(file)) continue;
 
         const incoming = moduleGraph.reverseEdges.get(file);
         if (incoming && incoming.size > 0) continue;
-
-        const relativePath = path.relative(context.projectRoot, file).replace(/\\/g, '/');
         const dynamicHint = hasDynamicRequireHint(context, relativePath);
 
         findings.push(

@@ -41,3 +41,14 @@ describe('duplication detection', () => {
         expect(findingsFor(scanRepository(dir).findings, 'DUP001').length).toBeGreaterThan(0);
     });
 });
+
+describe('duplication false positives', () => {
+    it('does not report shared import headers as duplicated code', () => {
+        const imports = Array.from({ length: 12 }, (_, i) => `import { helper${i}, other${i} } from './module${i}';`).join('\n');
+        dir = makeFixture({
+            'src/a.ts': `${imports}\nexport const a = 1;\n`,
+            'src/b.ts': `${imports}\nexport const b = 2;\n`
+        });
+        expect(findingsFor(scanRepository(dir).findings, 'DUP001')).toHaveLength(0);
+    });
+});

@@ -1,6 +1,6 @@
 {
   "name": "devkit-quality",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Deterministic repository quality scanner for JavaScript and TypeScript projects",
   "bin": {
     "devkit": "bin/devkit.js"
