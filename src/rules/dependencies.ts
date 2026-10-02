@@ -37,6 +37,20 @@ function collectRequireAndDynamicImportSpecifiers(sourceFile: ts.SourceFile): st
     return specifiers;
 }
 
+function findDependencyLine(packageJsonText: string, dependencyName: string): number {
+    const escaped = dependencyName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const pattern = new RegExp(`"${escaped}"\\s*:`);
+    const lines = packageJsonText.split(/\r\n|\r|\n/);
+
+    for (let i = 0; i < lines.length; i += 1) {
+        if (pattern.test(lines[i])) {
+            return i + 1;
+        }
+    }
+
+    return 1;
+}
+
 function getDeclaredDependencyNames(packageJson: Record<string, unknown> | null): Set<string> {
     if (!packageJson) return new Set();
 
@@ -56,6 +70,7 @@ function getDeclaredDependencyNames(packageJson: Record<string, unknown> | null)
 export function runDependencyRules(context: RuleContext): Finding[] {
     const findings: Finding[] = [];
     const { moduleGraph, packageJson, projectRoot } = context;
+    const packageJsonText = readFileSafe(path.join(projectRoot, 'package.json'));
 
     const usedPackageNames = new Set<string>();
 
@@ -99,10 +114,10 @@ export function runDependencyRules(context: RuleContext): Finding[] {
                     severity: 'MEDIUM',
                     confidence: 'CERTAIN',
                     file: 'package.json',
-                    line: 1,
+                    line: findDependencyLine(packageJsonText, dependencyName),
                     column: 1,
-                    message: 'Unused dependency detected',
-                    description: 'A declared package is not referenced by source files, require/import calls, or package.json scripts.',
+                    message: `Unused dependency: ${dependencyName}`,
+                    description: `"${dependencyName}" is declared but not referenced by source files, require/import calls, or package.json scripts.`,
                     evidence: dependencyName,
                     suggestion: 'Remove the unused dependency or confirm it is required by a toolchain entry point.',
                     fixAvailable: true
@@ -125,8 +140,8 @@ export function runDependencyRules(context: RuleContext): Finding[] {
                     file: 'package.json',
                     line: 1,
                     column: 1,
-                    message: 'Unlisted dependency detected',
-                    description: 'A module is imported from source but is not declared in package.json.',
+                    message: `Unlisted dependency: ${usedName}`,
+                    description: `"${usedName}" is imported from source but is not declared in package.json.`,
                     evidence: usedName,
                     suggestion: 'Add the package to package.json dependencies, or remove the import if it was unintentional.',
                     fixAvailable: false
