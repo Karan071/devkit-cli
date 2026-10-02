@@ -44,8 +44,8 @@ DevKit Repository Scan
 
 A scan runs in a single pass over the repository:
 
-1. **Discovery** — walk the directory tree, apply configured include/exclude and ignore patterns, skip generated files, and select `.js`/`.jsx`/`.ts`/`.tsx`/`.mjs`/`.cjs` files.
-2. **Parse** — build one `ts.Program` (via the TypeScript Compiler API) covering every discovered file, with `noUnusedLocals`/`noUnusedParameters`/`noImplicitAny` enabled so the compiler itself surfaces dead bindings and implicit `any`.
+1. **Discovery** — list files with `git ls-files` (exact `.gitignore` semantics; falls back to a filesystem walk outside git), apply include/exclude and `.devkitignore`, skip generated/minified files and build output in package roots, and split files into JS/TS sources (`.js`/`.jsx`/`.ts`/`.tsx`/`.mjs`/`.cjs`/`.mts`/`.cts`, fully analyzed) and other text files (configs, `.env`, YAML, other languages — secret-scanned).
+2. **Parse & type-check** — build one `ts.Program` (via the TypeScript Compiler API) covering every discovered file, with `noUnusedLocals`/`noUnusedParameters`/`noImplicitAny` enabled so the compiler itself surfaces dead bindings and implicit `any`.
 3. **Module graph** — resolve imports, `require()`, dynamic `import()`, TypeScript path aliases, and re-exports into an internal dependency graph (edges, reverse edges, entry points, re-export targets).
 4. **Rules** — each rule module receives a shared `RuleContext` (files, program, module graph, config, `package.json`) and returns `Finding[]`.
 5. **Scoring** — findings are weighted by severity × confidence, normalized against repository size, and rolled up into per-category and overall scores.
@@ -107,7 +107,7 @@ Design principle carried over from the project's PRD (`devkit-slop-scanner-final
 | [`src/ast/comments.ts`](src/ast/comments.ts) | Collects and caches comment ranges for hygiene checks and suppressions. |
 | [`src/moduleResolution.ts`](src/moduleResolution.ts) | Resolves modules using TypeScript config, path aliases, and a per-scan cache. |
 | [`src/moduleGraph.ts`](src/moduleGraph.ts) | Resolves imports/exports/re-exports into an internal dependency graph; detects entry points and import cycles. |
-| [`src/suppressions.ts`](src/suppressions.ts) | Applies `devkit-disable-next-line` directives to findings. |
+| [`src/suppressions.ts`](src/suppressions.ts) | Applies `devkit-disable-next-line` and `devkit-disable-file` directives to findings. |
 | [`src/cliLogic.ts`](src/cliLogic.ts) | Pure finding-filter and quality-gate logic used by the CLI. |
 | [`src/config.ts`](src/config.ts) | Loads/writes `.devkitrc.json`; rule enable/disable and threshold overrides. |
 | [`src/context.ts`](src/context.ts) | `RuleContext` type shared by every rule module. |
@@ -137,7 +137,7 @@ Design principle carried over from the project's PRD (`devkit-slop-scanner-final
 
 Run `devkit rules` for the live list, or `devkit explain <RULE_ID>` for a rule's full writeup (why it matters, example, fix classification).
 
-> **Note:** `devkit-slop-scanner-final-prd.md` in the repo root is the original product-requirements document and describes a larger target surface (incremental caching, monorepo-aware scoring, rule presets, a V2 LLM layer, and more). The table above reflects what is currently implemented in `src/`; treat the PRD as the roadmap, not the current feature set. Minimal `devkit-disable-next-line` suppressions are implemented.
+> **Note:** `devkit-slop-scanner-final-prd.md` in the repo root is the original product-requirements document and describes a larger target surface (incremental caching, monorepo-aware scoring, rule presets, a V2 LLM layer, and more). The table above reflects what is currently implemented in `src/`; treat the PRD as the roadmap, not the current feature set. Minimal `devkit-disable-next-line` and `devkit-disable-file` suppressions are implemented; monorepo-aware dependency scoring (DEP001/DEP002) is implemented.
 
 ## Project layout
 
@@ -208,10 +208,11 @@ Run a full scan (defaults to colored terminal output):
 
 ```bash
 devkit scan
+devkit scan ../other-repo              # scan another directory (every scanning command takes an optional path)
 devkit scan --json                     # machine-readable JSON (ScanSummary)
 devkit scan --format markdown          # Markdown report
 devkit scan --format sarif             # SARIF, for code-scanning platforms
-devkit scan --category dead-code       # only one category
+devkit scan --category dead-code       # only one category (dead-code, security, type-safety, ...)
 devkit scan --severity high            # only one severity level
 ```
 
@@ -268,25 +269,29 @@ Architecture-layer rules (`ARCH001`) are opt-in and only produce findings once c
 
 ## Scoring model
 
-Each finding is weighted by `severity × confidence` ([`src/scoring.ts`](src/scoring.ts)) and normalized against source LOC (in 500-line chunks), so a single low-confidence finding in a large repository barely moves the score. Category scores are combined into the overall score using fixed weights:
+Each finding is weighted by `severity × confidence` ([`src/scoring.ts`](src/scoring.ts)); findings in test files count at half weight. Quality categories are normalized against lines of code (in 500-line chunks), so the same number of findings costs less in a larger repository. Security is normalized only by the square root of size, capped at 3×, because one leaked key is just as serious in a large repository. Category scores are combined into the overall score using these weights:
 
 | Category | Weight |
 | --- | ---: |
-| Dead code | 20% |
+| Dead code | 15% |
 | Complexity | 15% |
+| Security | 15% |
 | Dependencies | 10% |
 | Duplication | 10% |
-| Redundant logic | 10% |
 | Error handling | 10% |
 | Type safety | 10% |
-| Architecture | 10% |
+| Redundant logic | 5% |
+| Architecture | 5% |
 | Hygiene | 5% |
 
-Security findings are scored and reported separately rather than folded into the overall score.
+- **Security cap:** a HIGH/CRITICAL security finding with HIGH or CERTAIN confidence outside test files caps the overall score at 6.9, however clean the rest of the code is.
+- **Architecture** is only scored when `architecture.layers` is configured; otherwise it is shown as `n/a` and the other weights are rescaled.
+- **Filters** (`--category`, `--severity`) only narrow the findings that are displayed. Scores and `--min-score` always use the whole repository.
+- A scan that analyzes zero JS/TS files prints a warning and always fails `--min-score`.
 
 ## Output formats
 
-- **Terminal** (default) — colored, with a score bar, per-category breakdown, and code frames for the top finding per category.
+- **Terminal** (default) — live progress on stderr, then a score with letter grade, scan coverage (files found, analyzed, secret-scanned, skipped, duration), per-category score bars, severity distribution, file hotspots, and code frames for the worst finding per category. Respects `NO_COLOR`/`FORCE_COLOR`; set `DEVKIT_ASCII=1` for plain-ASCII glyphs.
 - **JSON** (`--json` / `--format json`) — the full `ScanSummary` object: score, category scores, every finding, repository metrics.
 - **Markdown** (`--format markdown` / `devkit report`) — category table, top deductions, and a flat findings list, suitable for pasting into a PR description.
 - **SARIF** (`--format sarif`) — standard SARIF 2.1.0, for GitHub code scanning and similar tools.
@@ -294,10 +299,14 @@ Security findings are scored and reported separately rather than folded into the
 ## Current limitations
 
 - Framework entry-point detection is limited to package metadata, tests, and a basic Next.js convention check. Other React setups such as Vite may need entry files specified through package metadata or imports.
-- `.gitignore` and `.devkitignore` negation patterns (`!pattern`) are skipped; full Git ignore semantics are not implemented.
+- Outside a git repository, `.gitignore` is approximated (negation patterns `!pattern` are skipped). `.devkitignore` never supports negation.
+- Non-JS/TS files (Python, Go, YAML, ...) only get the secret scan, not code-quality rules. Script blocks in `.vue`/`.svelte` files are not parsed.
 - `devkit fix` only previews findings marked as safe. It does not modify files.
 - `devkit baseline compare` compares the overall score only; it does not report newly added or resolved findings.
-- DevKit has no rule presets, React-specific or test-quality rules, configuration analysis, incremental cache, or monorepo-aware scoring.
+- The secret scan is scoped by `scan.exclude`, not `scan.include`: a secret outside your configured `include` globs is still reported, by design (security blind spots are worse than noise), but this is easy to miss if you expect `include` to fully sandbox a scan.
+- DEP001/DEP002 are workspace-aware (each `package.json` in the repo is checked against its own files, with the root tolerated as a hoisting source) but do not read `pnpm-workspace.yaml` or Lerna config — only the `package.json` layout itself.
+- The CLI-entry heuristic that discounts `console.*` findings looks for an import of a known argv-parsing library (commander, yargs, cac, meow, sade, clipanion). A hand-rolled CLI without one of these still gets flagged at full confidence.
+- DevKit has no rule presets, React-specific or test-quality rules, configuration analysis, or incremental cache.
 
 ## CI/CD integration
 

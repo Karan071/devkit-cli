@@ -60,7 +60,27 @@ export interface ScanSummary {
     score: number;
     categoryScores: Record<string, number>;
     securityScore: number;
+    /** True when the overall score was capped because of a credible security finding. */
+    securityCapped?: boolean;
     findings: Finding[];
     metrics: RepoMetrics;
     generatedFiles: string[];
+    coverage?: ScanCoverage;
+}
+
+export interface ScanCoverage {
+    /** How files were enumerated: `git` honors .gitignore exactly, `filesystem` is the fallback walk. */
+    discoveryMethod: 'git' | 'filesystem';
+    /** Non-ignored files found in the repository. */
+    discoveredFiles: number;
+    /** JS/TS files that received full AST + type-checker analysis. */
+    analyzedFiles: number;
+    /** Other text files (configs, env files, other languages) that received a secret scan. */
+    textFilesScanned: number;
+    generatedFilesSkipped: number;
+    tooLargeFilesSkipped: string[];
+    binaryFilesSkipped: number;
+    /** File count per extension across all discovered files, e.g. `{ ".ts": 42, ".json": 6 }`. */
+    languages: Record<string, number>;
+    durationMs: number;
 }

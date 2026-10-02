@@ -67,4 +67,15 @@ describe('module graph regressions', () => {
         expect(summary.metrics.totalFiles).toBe(1);
         expect(summary.findings.some((finding) => finding.file === 'src/ignored/bad.ts')).toBe(false);
     });
+
+    it('treats tool config files as entry points rather than unused files', () => {
+        dir = makeFixture({
+            'package.json': JSON.stringify({ name: 'fixture', main: 'src/index.ts' }),
+            'src/index.ts': 'export const ok = 1;',
+            'vitest.config.mts': 'export default { test: {} };',
+            'eslint.config.js': 'module.exports = [];'
+        });
+        const unusedFiles = findingsFor(scanRepository(dir).findings, 'DEAD010').map((finding) => finding.file);
+        expect(unusedFiles).toEqual([]);
+    });
 });

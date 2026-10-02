@@ -7,6 +7,8 @@ import type { DevkitConfig } from './config';
 import { matchesAnyGlob } from './glob';
 import { createResolutionContext, resolveSpecifier, type SpecifierKind } from './moduleResolution';
 
+const TOOL_CONFIG_FILE = /(?:^|\/)(?:[\w.-]+\.config|\.[\w-]+rc)\.[cm]?[jt]sx?$/;
+
 export interface ImportInfo {
     specifier: string;
     resolved: string | null;
@@ -261,7 +263,9 @@ function resolveEntryPoints(projectRoot: string, files: string[], packageJson: R
     void config;
 
     for (const file of files) {
-        if (isTestFile(file)) {
+        const relative = path.relative(projectRoot, file).replace(/\\/g, '/');
+        // Tests and tool config files (vite.config.ts, eslint.config.mjs, ...) are loaded by tools, not imported.
+        if (isTestFile(relative) || TOOL_CONFIG_FILE.test(relative)) {
             entryPoints.add(file);
         }
     }

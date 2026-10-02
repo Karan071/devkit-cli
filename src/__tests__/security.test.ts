@@ -112,3 +112,24 @@ describe('security rules', () => {
         expect(findingsFor(summary.findings, 'SEC005').length).toBe(0);
     });
 });
+
+describe('secret scan beyond JS/TS files', () => {
+    let fixture: string | undefined;
+    afterEach(() => { if (fixture) cleanupFixture(fixture); fixture = undefined; });
+
+    it('finds credentials in YAML, JSON and .env files', () => {
+        fixture = makeFixture({
+            'src/index.ts': 'export const a = 1;',
+            'config/settings.yaml': 'stripe_key: sk_live_abcdefghijklmnop1234',
+            'config/creds.json': '{"token":"ghp_abcdefghijklmnopqrstuvwxyz1234567890"}',
+            'deploy/.env.production': 'DATABASE_PASSWORD=Zk8#qP2!vR9xLm4Tq7Wn'
+        });
+        const files = scanRepository(fixture).findings.filter((finding) => finding.ruleId === 'SEC001').map((finding) => finding.file).sort();
+        expect(files).toEqual(['config/creds.json', 'config/settings.yaml', 'deploy/.env.production']);
+    });
+
+    it('ignores placeholder values in config files', () => {
+        fixture = makeFixture({ 'src/index.ts': 'export const a = 1;', '.env.example': 'API_KEY=your-api-key-goes-here-please' });
+        expect(scanRepository(fixture).findings.filter((finding) => finding.ruleId === 'SEC001')).toHaveLength(0);
+    });
+});

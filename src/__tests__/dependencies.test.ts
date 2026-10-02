@@ -92,3 +92,46 @@ describe('dependency hygiene', () => {
         expect(findingsFor(summary.findings, 'DEP003').length).toBe(0);
     });
 });
+
+describe('workspace / monorepo dependency scoping', () => {
+    it("does not flag a workspace member's own declared dependency as unlisted", () => {
+        dir = makeFixture({
+            'package.json': JSON.stringify({ name: 'root', workspaces: ['packages/*'] }),
+            'packages/api/package.json': JSON.stringify({ name: '@m/api', dependencies: { express: '^4.0.0' } }),
+            'packages/api/src/index.ts': "import express from 'express';\nexport const app = express();\n"
+        });
+        const findings = scanRepository(dir).findings;
+        expect(findingsFor(findings, 'DEP002')).toHaveLength(0);
+        expect(findingsFor(findings, 'DEP001')).toHaveLength(0);
+    });
+
+    it('still flags a genuinely unlisted dependency inside a workspace member', () => {
+        dir = makeFixture({
+            'package.json': JSON.stringify({ name: 'root', workspaces: ['packages/*'] }),
+            'packages/api/package.json': JSON.stringify({ name: '@m/api', dependencies: {} }),
+            'packages/api/src/index.ts': "import express from 'express';\nexport const app = express();\n"
+        });
+        const unlisted = findingsFor(scanRepository(dir).findings, 'DEP002');
+        expect(unlisted).toHaveLength(1);
+        expect(unlisted[0].file).toBe('packages/api/package.json');
+    });
+
+    it('lets a workspace member use a dependency hoisted to the root', () => {
+        dir = makeFixture({
+            'package.json': JSON.stringify({ name: 'root', workspaces: ['packages/*'], dependencies: { lodash: '^4.0.0' } }),
+            'packages/api/package.json': JSON.stringify({ name: '@m/api', dependencies: {} }),
+            'packages/api/src/index.ts': "import lodash from 'lodash';\nexport const x = lodash;\n"
+        });
+        expect(findingsFor(scanRepository(dir).findings, 'DEP002')).toHaveLength(0);
+    });
+
+    it('flags an unused dependency declared inside a specific workspace member', () => {
+        dir = makeFixture({
+            'package.json': JSON.stringify({ name: 'root', workspaces: ['packages/*'] }),
+            'packages/api/package.json': JSON.stringify({ name: '@m/api', dependencies: { lodash: '^4.0.0' } }),
+            'packages/api/src/index.ts': 'export const x = 1;\n'
+        });
+        const unused = findingsFor(scanRepository(dir).findings, 'DEP001');
+        expect(unused.some((f) => f.evidence === 'lodash' && f.file === 'packages/api/package.json')).toBe(true);
+    });
+});

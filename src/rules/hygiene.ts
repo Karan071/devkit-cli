@@ -12,6 +12,11 @@ const BACKUP_FILE_PATTERN = /(\.bak|\.orig|\.tmp|~)$/i;
 const ENV_FILE_PATTERN = /^\.env(\..+)?$/i;
 const ENV_SAFE_SUFFIXES = /\.(example|sample|template|dist)$/i;
 
+// A file that builds a CLI program (imports an argv/command-parsing library) treats console
+// output as its actual product, not a debug leftover. Still flagged, at lower confidence, so it
+// stays visible but does not carry the same weight as a stray console.log in business logic.
+const CLI_LIBRARY_IMPORT = /\bfrom\s+['"](?:commander|yargs|cac|meow|sade|clipanion)['"]|\brequire\(\s*['"](?:commander|yargs|cac|meow|sade|clipanion)['"]\s*\)/;
+
 export function runHygieneRules(context: RuleContext): Finding[] {
     const findings: Finding[] = [];
 
@@ -20,14 +25,19 @@ export function runHygieneRules(context: RuleContext): Finding[] {
         const sourceFile = context.program.getSourceFile(file);
         if (!sourceFile) continue;
         const relativePath = path.relative(context.projectRoot, file).replace(/\\/g, '/');
+        const isCliEntryFile = CLI_LIBRARY_IMPORT.test(text);
         const visit = (node: ts.Node): void => {
             if (isRuleEnabled(context.config, 'HYGIENE001') && ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) &&
                 ts.isIdentifier(node.expression.expression) && node.expression.expression.text === 'console' &&
                 ['log', 'debug', 'warn', 'error'].includes(node.expression.name.text)) {
                 const { line, column } = lineAndColumn(sourceFile, node.getStart());
                 findings.push(buildFinding({
-                    ruleId: 'HYGIENE001', category: 'hygiene', severity: 'LOW', confidence: 'CERTAIN', file: relativePath, line, column,
-                    message: 'Debug statement found', description: 'Console output remains in source code.', evidence: node.getText().slice(0, 160),
+                    ruleId: 'HYGIENE001', category: 'hygiene', severity: 'LOW', confidence: isCliEntryFile ? 'LOW' : 'CERTAIN', file: relativePath, line, column,
+                    message: 'Debug statement found',
+                    description: isCliEntryFile
+                        ? 'Console output remains in source code. This file builds a CLI program, so this may be intended output rather than a debug leftover.'
+                        : 'Console output remains in source code.',
+                    evidence: node.getText().slice(0, 160),
                     suggestion: 'Remove or gate debug logging before production deployment.', fixAvailable: true
                 }));
             }

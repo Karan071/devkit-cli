@@ -27,16 +27,30 @@ interface MatchRange {
     endLineA: number;
     startLineB: number;
     endLineB: number;
+    startIndexA: number;
+    endIndexA: number;
+    startIndexB: number;
+}
+
+function importRanges(sourceFile: ts.SourceFile): Array<[number, number]> {
+    return sourceFile.statements
+        .filter((statement) => ts.isImportDeclaration(statement) || ts.isImportEqualsDeclaration(statement) || (ts.isExportDeclaration(statement) && !!statement.moduleSpecifier))
+        .map((statement) => [statement.getStart(sourceFile), statement.getEnd()]);
 }
 
 function tokenize(sourceFile: ts.SourceFile, languageVariant: ts.LanguageVariant): Token[] {
     const scanner = ts.createScanner(ts.ScriptTarget.ES2022, true, languageVariant, sourceFile.text);
+    // Import headers are near-identical across files by nature (especially tests) and are not
+    // extractable logic, so they are left out of clone detection.
+    const skipped = importRanges(sourceFile);
     const tokens: Token[] = [];
     let kind = scanner.scan();
 
     while (kind !== ts.SyntaxKind.EndOfFileToken) {
         const pos = scanner.getTokenStart();
-        tokens.push({ text: scanner.getTokenText(), line: sourceFile.getLineAndCharacterOfPosition(pos).line + 1, kind });
+        if (!skipped.some(([start, end]) => pos >= start && pos < end)) {
+            tokens.push({ text: scanner.getTokenText(), line: sourceFile.getLineAndCharacterOfPosition(pos).line + 1, kind });
+        }
         kind = scanner.scan();
     }
 
@@ -60,12 +74,15 @@ function severityForSpan(spanTokens: number, minTokens: number): Severity {
 }
 
 function mergeRanges(ranges: MatchRange[]): MatchRange[] {
-    const sorted = [...ranges].sort((a, b) => a.startLineA - b.startLineA);
+    const sorted = [...ranges].sort((a, b) => a.startIndexA - b.startIndexA || a.startIndexB - b.startIndexB);
     const merged: MatchRange[] = [];
 
     for (const range of sorted) {
         const last = merged[merged.length - 1];
-        if (last && range.startLineA <= last.endLineA + 1 && range.startLineB <= last.endLineB + 1) {
+        // Consecutive windows of the same clone advance by the same offset on both sides.
+        const sameClone = last && range.startIndexA <= last.endIndexA && range.startIndexB - range.startIndexA === last.startIndexB - last.startIndexA;
+        if (sameClone) {
+            last.endIndexA = Math.max(last.endIndexA, range.endIndexA);
             last.endLineA = Math.max(last.endLineA, range.endLineA);
             last.endLineB = Math.max(last.endLineB, range.endLineB);
         } else {
@@ -121,7 +138,8 @@ export function runDuplicationRules(context: RuleContext): Finding[] {
             for (let j = i + 1; j < entries.length; j += 1) {
                 const a = entries[i];
                 const b = entries[j];
-                if (a.file === b.file && a.startIndex === b.startIndex) continue;
+                // Within one file, overlapping windows are repetitive code, not a copy-paste.
+                if (a.file === b.file && Math.abs(a.startIndex - b.startIndex) < minTokens) continue;
 
                 const key = a.file <= b.file ? `${a.file}::${b.file}` : `${b.file}::${a.file}`;
                 const [first, second] = a.file <= b.file ? [a, b] : [b, a];
@@ -131,7 +149,10 @@ export function runDuplicationRules(context: RuleContext): Finding[] {
                     startLineA: first.startLine,
                     endLineA: first.endLine,
                     startLineB: second.startLine,
-                    endLineB: second.endLine
+                    endLineB: second.endLine,
+                    startIndexA: first.startIndex,
+                    endIndexA: first.startIndex + minTokens,
+                    startIndexB: second.startIndex
                 });
             }
         }
@@ -144,14 +165,13 @@ export function runDuplicationRules(context: RuleContext): Finding[] {
         const merged = mergeRanges(ranges);
 
         for (const range of merged) {
-            const spanLines = range.endLineA - range.startLineA + 1;
-            if (spanLines * WINDOW_STEP < minTokens) continue;
+            const spanTokens = range.endIndexA - range.startIndexA;
 
             findings.push(
                 buildFinding({
                     ruleId: 'DUP001',
                     category: 'duplication',
-                    severity: severityForSpan(spanLines * WINDOW_STEP, minTokens),
+                    severity: severityForSpan(spanTokens, minTokens),
                     confidence: 'MEDIUM',
                     file: fileA,
                     line: range.startLineA,
