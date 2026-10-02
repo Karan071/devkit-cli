@@ -45,4 +45,19 @@ describe('promise handling rules', () => {
         expect(findings).toHaveLength(1);
         expect(findings[0].line).toBe(1);
     });
+
+    it('does not flag a promise statement terminated with .catch()', () => {
+        dir = makeFixture({ 'src/index.ts': `async function save() { return 1; }\nexport function run() { save().catch((error) => { console.error(error); }); }` });
+        expect(findingsFor(scanRepository(dir).findings, 'ERR003')).toHaveLength(0);
+    });
+
+    it('still flags a promise statement terminated with .finally() but no .catch()', () => {
+        dir = makeFixture({ 'src/index.ts': `async function save() { return 1; }\nexport function run() { save().finally(() => { cleanup(); }); }` });
+        expect(findingsFor(scanRepository(dir).findings, 'ERR003').length).toBeGreaterThan(0);
+    });
+
+    it('does not flag .catch() followed by .finally()', () => {
+        dir = makeFixture({ 'src/index.ts': `async function save() { return 1; }\nexport function run() { save().catch((error) => { console.error(error); }).finally(() => { cleanup(); }); }` });
+        expect(findingsFor(scanRepository(dir).findings, 'ERR003')).toHaveLength(0);
+    });
 });

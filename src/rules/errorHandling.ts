@@ -36,6 +36,16 @@ function propertyCallName(call: ts.CallExpression): string | null {
     return ts.isPropertyAccessExpression(call.expression) ? call.expression.name.text : null;
 }
 
+function promiseChainHasCatch(call: ts.CallExpression): boolean {
+    let current: ts.Node = call;
+    while (ts.isCallExpression(current)) {
+        if (propertyCallName(current) === 'catch') return true;
+        if (!ts.isPropertyAccessExpression(current.expression)) return false;
+        current = current.expression.expression;
+    }
+    return false;
+}
+
 export function runErrorHandlingRules(context: RuleContext): Finding[] {
     const findings: Finding[] = [];
     const checker = context.program.getTypeChecker();
@@ -73,7 +83,7 @@ export function runErrorHandlingRules(context: RuleContext): Finding[] {
 
             if (isRuleEnabled(context.config, 'ERR003') && ts.isExpressionStatement(node) && ts.isCallExpression(node.expression)) {
                 const call = node.expression;
-                if (propertyCallName(call) !== 'then' && isPromiseLike(checker, call)) {
+                if (propertyCallName(call) !== 'then' && !promiseChainHasCatch(call) && isPromiseLike(checker, call)) {
                     const { line, column } = lineAndColumn(sourceFile, node.getStart());
                     findings.push(buildFinding({
                         ruleId: 'ERR003', category: 'errorHandling', severity: 'MEDIUM', confidence: 'HIGH', file: relativePath, line, column,
