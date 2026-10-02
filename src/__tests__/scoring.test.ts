@@ -37,10 +37,35 @@ describe('computeScores', () => {
         expect(result.categoryScores.deadCode).toBe(10);
     });
 
-    it('keeps security out of the blended overall score', () => {
+    it('folds security into the overall score and caps it on a credible security finding', () => {
         const withSecurity = computeScores([finding({ category: 'security', severity: 'CRITICAL', confidence: 'CERTAIN' })], 100);
-        expect(withSecurity.overallScore).toBe(10);
         expect(withSecurity.securityScore).toBeLessThan(10);
+        expect(withSecurity.overallScore).toBeLessThanOrEqual(6.9);
+        expect(withSecurity.securityCapped).toBe(true);
+    });
+
+    it('does not cap the score for low-confidence or test-file security findings', () => {
+        const lowConfidence = computeScores([finding({ category: 'security', severity: 'HIGH', confidence: 'LOW' })], 1000);
+        const inTest = computeScores([finding({ category: 'security', severity: 'HIGH', confidence: 'HIGH', file: 'src/a.test.ts' })], 1000);
+        expect(lowConfidence.securityCapped).toBe(false);
+        expect(inTest.securityCapped).toBe(false);
+    });
+
+    it('does not let a large codebase dilute a leaked secret away', () => {
+        const leaks = Array.from({ length: 5 }, () => finding({ category: 'security', severity: 'HIGH', confidence: 'HIGH' }));
+        expect(computeScores(leaks, 50000).securityScore).toBeLessThan(9);
+    });
+
+    it('excludes architecture from the blend when no layers are configured', () => {
+        const result = computeScores([], 1000, { architectureConfigured: false });
+        expect(result.categoryScores).not.toHaveProperty('architecture');
+        expect(result.overallScore).toBe(10);
+    });
+
+    it('weighs findings in test files at half the penalty', () => {
+        const inSource = computeScores([finding({ severity: 'HIGH' })], 100);
+        const inTest = computeScores([finding({ severity: 'HIGH', file: 'src/__tests__/a.test.ts' })], 100);
+        expect(inTest.categoryScores.hygiene).toBeGreaterThan(inSource.categoryScores.hygiene);
     });
 
     it('penalizes the same finding count less in a larger repository', () => {

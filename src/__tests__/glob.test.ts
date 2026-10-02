@@ -9,4 +9,10 @@ describe('glob matching', () => {
         expect(globToRegExp('src/a+b.ts').test('src/a+b.ts')).toBe(true);
         expect(globToRegExp('src/a+b.ts').test('src/ab.ts')).toBe(false);
     });
+
+    it('treats **/ as whole directories only', () => {
+        expect(matchesAnyGlob('src/lib/a.ts', ['**/lib/**'])).toBe(true);
+        expect(matchesAnyGlob('lib/a.ts', ['**/lib/**'])).toBe(true);
+        expect(matchesAnyGlob('src/mylib', ['**/lib'])).toBe(false);
+    });
 });
