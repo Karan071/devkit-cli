@@ -1,6 +1,7 @@
 import type ts from 'typescript';
 import type { DevkitConfig } from './config';
 import type { ModuleGraph } from './moduleGraph';
+import type { ProjectTypeSettings } from './ast/parse';
 
 export interface RuleContext {
     projectRoot: string;
@@ -12,4 +13,6 @@ export interface RuleContext {
     moduleGraph: ModuleGraph;
     config: DevkitConfig;
     packageJson: Record<string, unknown> | null;
+    /** The project's own type-checking strictness; absent in synthetic contexts, where rules assume defaults. */
+    typeSettings?: ProjectTypeSettings;
 }

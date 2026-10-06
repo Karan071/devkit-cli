@@ -181,18 +181,22 @@ export function runComplexityRules(context: RuleContext, functionMetrics: Functi
     const nestingMax = getRuleThreshold(context.config, 'COMPLEX005', DEFAULT_THRESHOLDS.COMPLEX005);
 
     for (const metric of functionMetrics) {
+        // Cyclomatic complexity counts every `case`, `?:` and `||`, so a flat lookup (locale tables, switch
+        // mappers, guard-clause validators) scores like tangled logic. When cognitive complexity - which
+        // penalises nesting and breaks in flow - says the function reads linearly, it is wide, not hard.
+        const readsLinearly = metric.cognitive <= cognitiveMax;
         if (isRuleEnabled(context.config, 'COMPLEX001') && metric.cyclomatic > cyclomaticMax) {
             findings.push(
                 buildFinding({
                     ruleId: 'COMPLEX001',
                     category: 'complexity',
-                    severity: severityForOverage(metric.cyclomatic, cyclomaticMax),
-                    confidence: 'HIGH',
+                    severity: readsLinearly ? 'LOW' : severityForOverage(metric.cyclomatic, cyclomaticMax),
+                    confidence: readsLinearly ? 'MEDIUM' : 'HIGH',
                     file: metric.file,
                     line: metric.line,
                     column: 1,
                     message: 'High cyclomatic complexity function',
-                    description: `Function "${metric.name}" has cyclomatic complexity ${metric.cyclomatic} (max ${cyclomaticMax}).`,
+                    description: `Function "${metric.name}" has cyclomatic complexity ${metric.cyclomatic} (max ${cyclomaticMax}).${readsLinearly ? ` Its cognitive complexity is only ${metric.cognitive}, so it is mostly flat branching.` : ''}`,
                     evidence: `cyclomatic=${metric.cyclomatic}`,
                     suggestion: 'Split the function into smaller units or reduce branching.',
                     fixAvailable: false

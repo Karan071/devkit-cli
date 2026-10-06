@@ -78,6 +78,8 @@ export interface ScanCoverage {
     /** Other text files (configs, env files, other languages) that received a secret scan. */
     textFilesScanned: number;
     generatedFilesSkipped: number;
+    /** Findings hidden because the rule does not apply to tests, examples, benchmarks or fixtures. Use `scan.includeNonProduction` to show them. */
+    nonProductionFindingsHidden: number;
     tooLargeFilesSkipped: string[];
     binaryFilesSkipped: number;
     /** File count per extension across all discovered files, e.g. `{ ".ts": 42, ".json": 6 }`. */

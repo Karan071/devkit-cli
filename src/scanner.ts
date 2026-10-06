@@ -2,7 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import ts from 'typescript';
 import { countLines, discoverFiles, isTestFile, readFileSafe, toRelative } from './discovery';
-import { createProgram } from './ast/parse';
+import { createProgram, readProjectTypeSettings } from './ast/parse';
+import { loadTsConfigFor } from './moduleResolution';
 import { buildModuleGraph } from './moduleGraph';
 import { loadConfig } from './config';
 import type { RuleContext } from './context';
@@ -19,6 +20,7 @@ import { runArchitectureRules } from './rules/architecture';
 import { runHygieneRules } from './rules/hygiene';
 import { computeScores } from './scoring';
 import { isSuppressed } from './suppressions';
+import { ruleAppliesTo } from './fileKind';
 import type { Finding, RepoMetrics, ScanCoverage, ScanSummary } from './types';
 
 export interface ScanProgress {
@@ -116,7 +118,9 @@ export function scanRepository(projectRoot: string, onProgress: ProgressListener
     }
 
     nextPhase(`Parsing ${files.length} source files`);
-    const program = createProgram(files);
+    const tsConfig = loadTsConfigFor(projectRoot);
+    const typeSettings = readProjectTypeSettings(tsConfig?.options ?? {}, !!tsConfig);
+    const program = createProgram(files, tsConfig?.options);
 
     // Type-check every file up front: the program caches diagnostics, so the rule phases that
     // need them are cheap afterwards, and this (the slowest step) can report per-file progress.
@@ -133,9 +137,9 @@ export function scanRepository(projectRoot: string, onProgress: ProgressListener
     });
 
     nextPhase('Building module graph');
-    const moduleGraph = buildModuleGraph(projectRoot, files, packageJson, config);
+    const moduleGraph = buildModuleGraph(projectRoot, files, packageJson, config, textFiles);
 
-    const context: RuleContext = { projectRoot, files, allFiles, textFiles, program, moduleGraph, config, packageJson };
+    const context: RuleContext = { projectRoot, files, allFiles, textFiles, program, moduleGraph, config, packageJson, typeSettings };
 
     nextPhase('Measuring complexity');
     const functionMetrics = collectFunctionMetrics(context);
@@ -147,7 +151,12 @@ export function scanRepository(projectRoot: string, onProgress: ProgressListener
     }
 
     nextPhase('Scoring');
+    let hiddenNonProduction = 0;
     const findings: Finding[] = allFindings.filter((finding) => {
+        if (!config.scan.includeNonProduction && !ruleAppliesTo(finding.ruleId, finding.file)) {
+            hiddenNonProduction += 1;
+            return false;
+        }
         const sourceFile = context.program.getSourceFile(path.resolve(projectRoot, finding.file));
         return !sourceFile || !isSuppressed(sourceFile, finding.line, finding.ruleId);
     });
@@ -225,6 +234,7 @@ export function scanRepository(projectRoot: string, onProgress: ProgressListener
         analyzedFiles: files.length,
         textFilesScanned: textFiles.length,
         generatedFilesSkipped: generatedFiles.length,
+        nonProductionFindingsHidden: hiddenNonProduction,
         tooLargeFilesSkipped: discovery.skipped.tooLarge,
         binaryFilesSkipped: discovery.skipped.binary,
         languages: countLanguages(allFiles),

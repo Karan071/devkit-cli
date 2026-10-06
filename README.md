@@ -118,6 +118,9 @@ Design principle carried over from the project's PRD (`devkit-slop-scanner-final
 | [`src/reporters.ts`](src/reporters.ts) | Terminal, JSON, Markdown, and SARIF renderers, plus baseline-compare output. |
 | [`src/terminal.ts`](src/terminal.ts) | ANSI color helpers, score bar, code-frame rendering, spinner. |
 | [`src/glob.ts`](src/glob.ts) | Minimal glob-to-regex matcher used for config include/exclude patterns. |
+| [`src/fileKind.ts`](src/fileKind.ts) | Classifies each file (production, test, type-test, example, benchmark, script, fixture) and declares which kinds each rule applies to. |
+| [`src/dependencyUsage.ts`](src/dependencyUsage.ts) | Finds dependency usage that no import shows: config files, stylesheets, tool shorthand names, executables, peers (from `node_modules` or lockfiles). |
+| [`src/frameworkConventions.ts`](src/frameworkConventions.ts) | Files a framework loads by convention (currently Next.js), so they are not reported as unused. |
 
 ### Rule categories implemented
 
@@ -242,6 +245,14 @@ devkit fix                  # preview findings marked as safe to fix
   "rules": {}
 }
 ```
+
+By default, noise-prone rules (style, typing, complexity, duplication, dead code, and injection/crypto/TLS security rules) judge shipped code only: findings in tests, examples, benchmarks, fixtures and scaffolds are hidden, and the scan summary shows how many were. Secret detection (`SEC001`) still scans everywhere. To see everything:
+
+```json
+{ "scan": { "includeNonProduction": true } }
+```
+
+TypeScript strictness follows your own `tsconfig.json`: implicit-`any` is reported only if you enabled `noImplicitAny`/`strict`, and never in plain JavaScript unless `checkJs` is on.
 
 Per-rule overrides live under `rules`:
 

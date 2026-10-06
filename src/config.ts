@@ -19,6 +19,8 @@ export interface DevkitConfig {
     scan: {
         include: string[];
         exclude: string[];
+        /** Report findings in tests, examples, benchmarks and fixtures too (default: hidden for noise-prone rules). */
+        includeNonProduction?: boolean;
     };
     architecture?: {
         layers: Record<string, ArchitectureLayer>;

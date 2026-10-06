@@ -21,39 +21,53 @@ function runAstChecks(context: RuleContext): Finding[] {
         if (isRuleEnabled(context.config, 'TS002')) {
             for (let i = 0; i < lines.length; i += 1) {
                 const trimmed = lines[i].trim();
-                if (
-                    (trimmed.startsWith('//') || trimmed.startsWith('*') || trimmed.startsWith('/*')) &&
-                    (trimmed.includes('@ts-ignore') || trimmed.includes('@ts-nocheck') || trimmed.includes('@ts-expect-error'))
-                ) {
-                    findings.push(
-                        buildFinding({
-                            ruleId: 'TS002',
-                            category: 'typescript',
-                            severity: 'MEDIUM',
-                            confidence: 'CERTAIN',
-                            file: relativePath,
-                            line: i + 1,
-                            column: lines[i].indexOf(trimmed) + 1,
-                            message: 'Suppressed type checking',
-                            description: 'A directive disables TypeScript checking for the following line or file.',
-                            evidence: trimmed,
-                            suggestion: 'Fix the underlying type error instead of suppressing it.',
-                            fixAvailable: false
-                        })
-                    );
-                }
+                const directive = /@ts-(ignore|nocheck|expect-error)\b(.*)$/.exec(trimmed);
+                if (!directive || !(trimmed.startsWith('//') || trimmed.startsWith('*') || trimmed.startsWith('/*'))) continue;
+
+                const kind = directive[1];
+                const reason = directive[2].replace(/^[\s:\-–—]+|[\s*/]+$/g, '');
+                const explained = reason.length >= 4;
+                // The expect-error form fails the build once the error is fixed, so it cannot silently rot, and an
+                // explained suppression is a recorded decision. Only unexplained ones deserve a real warning.
+                if (kind === 'expect-error' && explained) continue;
+                const severity = kind === 'nocheck' ? 'MEDIUM' : explained ? 'LOW' : 'MEDIUM';
+                const confidence = explained ? 'MEDIUM' : 'HIGH';
+
+                findings.push(
+                    buildFinding({
+                        ruleId: 'TS002',
+                        category: 'typescript',
+                        severity,
+                        confidence,
+                        file: relativePath,
+                        line: i + 1,
+                        column: lines[i].indexOf(trimmed) + 1,
+                        message: 'Suppressed type checking',
+                        description: explained
+                            ? 'A directive disables TypeScript checking for the following line or file; a reason is given.'
+                            : 'A directive disables TypeScript checking for the following line or file, with no explanation.',
+                        evidence: trimmed,
+                        suggestion: kind === 'ignore'
+                            ? 'Prefer @ts-expect-error with a reason, or fix the underlying type error.'
+                            : 'Fix the underlying type error, or document why the suppression is needed.',
+                        fixAvailable: false
+                    })
+                );
             }
         }
 
         const visit = (node: ts.Node): void => {
             if (isRuleEnabled(context.config, 'TS001') && node.kind === ts.SyntaxKind.AnyKeyword) {
                 const { line, column } = lineAndColumn(sourceFile, node.getStart());
+                // `Foo<any>` and `T extends Base<any>` are variance escape hatches that `unknown` often cannot
+                // replace; `x: any` and `as any` are where safety is actually given up.
+                const inTypeArguments = !!node.parent && (ts.isTypeReferenceNode(node.parent) || ts.isExpressionWithTypeArguments(node.parent) || ts.isTypeParameterDeclaration(node.parent));
                 findings.push(
                     buildFinding({
                         ruleId: 'TS001',
                         category: 'typescript',
-                        severity: 'MEDIUM',
-                        confidence: 'CERTAIN',
+                        severity: inTypeArguments ? 'LOW' : 'MEDIUM',
+                        confidence: inTypeArguments ? 'MEDIUM' : 'CERTAIN',
                         file: relativePath,
                         line,
                         column,
@@ -112,6 +126,17 @@ function runImplicitAnyDiagnostics(context: RuleContext): Finding[] {
         }
 
         const relativePath = path.relative(context.projectRoot, file).replace(/\\/g, '/');
+
+        // Judge a file only by the strictness the project opted into: a plain-JS project that never turned on
+        // checkJs/noImplicitAny has not asked for (and cannot satisfy) "Implicit any" findings.
+        const isTypeScript = /\.[cm]?tsx?$/i.test(file);
+        const settings = context.typeSettings;
+        const enforced = !settings
+            ? isTypeScript
+            : isTypeScript
+                ? !settings.hasTsConfig || settings.noImplicitAny
+                : settings.hasTsConfig && settings.checkJs && settings.noImplicitAny;
+        if (!enforced) continue;
 
         for (const diagnostic of diagnostics) {
             if (diagnostic.start === undefined || !IMPLICIT_ANY_CODES.has(diagnostic.code)) continue;

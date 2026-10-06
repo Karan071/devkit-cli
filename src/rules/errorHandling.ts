@@ -6,14 +6,57 @@ import { buildFinding } from '../finding';
 import { isRuleEnabled } from '../config';
 import { lineAndColumn } from '../ast/walk';
 
+/**
+ * A value is Promise-like only when its `then` follows the Promises/A+ shape: it accepts both a
+ * fulfilment and a rejection callback. Single-callback "thenables" (animation tweens, query builders)
+ * can't produce an unhandled rejection, so reporting them is noise.
+ */
 function isPromiseLike(checker: ts.TypeChecker, expression: ts.Expression): boolean {
     let type: ts.Type;
     try { type = checker.getTypeAtLocation(expression); } catch { return false; }
     if (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) return false;
-    const thenProperty = checker.getPropertyOfType(type, 'then');
-    if (!thenProperty) return false;
-    const thenType = checker.getTypeOfSymbolAtLocation(thenProperty, expression);
-    return checker.getSignaturesOfType(thenType, ts.SignatureKind.Call).length > 0;
+    const members = type.isUnion() ? type.types : [type];
+    return members.some((member) => {
+        const thenProperty = checker.getPropertyOfType(member, 'then');
+        if (!thenProperty) return false;
+        const thenType = checker.getTypeOfSymbolAtLocation(thenProperty, expression);
+        return checker.getSignaturesOfType(thenType, ts.SignatureKind.Call).some((signature) => signature.parameters.length >= 2);
+    });
+}
+
+/** `(async () => { try { ... } catch { ... } })()`: the function handles its own failures, so nothing can reject. */
+function isSelfHandlingAsyncIife(call: ts.CallExpression): boolean {
+    let callee: ts.Expression = call.expression;
+    while (ts.isParenthesizedExpression(callee)) callee = callee.expression;
+    if (!ts.isArrowFunction(callee) && !ts.isFunctionExpression(callee)) return false;
+    if (!ts.isBlock(callee.body)) return false;
+    return callee.body.statements.some((statement) => ts.isTryStatement(statement) && !!statement.catchClause);
+}
+
+/**
+ * Calls that hand back what they were given (`Object.assign(promise, extras)`, fluent `reply.code().send()`)
+ * are being used for their side effects; the returned value is the same object, not a new promise to await.
+ */
+function returnsItsInput(checker: ts.TypeChecker, call: ts.CallExpression): boolean {
+    let result: ts.Type;
+    try { result = checker.getTypeAtLocation(call); } catch { return false; }
+    const typeOf = (expression: ts.Expression): ts.Type | null => {
+        try { return checker.getTypeAtLocation(expression); } catch { return null; }
+    };
+
+    // Static helper handing back its first argument (`Object.assign(promise, extras)`, `Object.defineProperties(x, d)`):
+    // the very same type instance comes back, so the call decorates an object rather than starting new async work.
+    const firstArgument = call.arguments[0] ? typeOf(call.arguments[0]) : null;
+    if (firstArgument && result === firstArgument) return true;
+
+    // Fluent method returning its own receiver type (`reply.code(200).send(...)`). A real Promise chained off a
+    // Promise (`p.finally(...)`) is exactly the case the rule exists for, so Promise receivers never qualify.
+    if (ts.isPropertyAccessExpression(call.expression)) {
+        const receiver = typeOf(call.expression.expression);
+        const symbol = result.getSymbol();
+        if (receiver && symbol && symbol.getName() !== 'Promise' && (result === receiver || symbol === receiver.getSymbol())) return true;
+    }
+    return false;
 }
 
 function outerPromiseChain(node: ts.CallExpression): ts.CallExpression {
@@ -85,7 +128,7 @@ export function runErrorHandlingRules(context: RuleContext): Finding[] {
 
             if (isRuleEnabled(context.config, 'ERR003') && ts.isExpressionStatement(node) && ts.isCallExpression(node.expression)) {
                 const call = node.expression;
-                if (propertyCallName(call) !== 'then' && !promiseChainHasCatch(call) && isPromiseLike(checker, call)) {
+                if (propertyCallName(call) !== 'then' && !promiseChainHasCatch(call) && isPromiseLike(checker, call) && !isSelfHandlingAsyncIife(call) && !returnsItsInput(checker, call)) {
                     const { line, column } = lineAndColumn(sourceFile, node.getStart());
                     findings.push(buildFinding({
                         ruleId: 'ERR003', category: 'errorHandling', severity: 'MEDIUM', confidence: 'HIGH', file: relativePath, line, column,
@@ -95,7 +138,8 @@ export function runErrorHandlingRules(context: RuleContext): Finding[] {
                 }
             }
 
-            if (isRuleEnabled(context.config, 'ERR004') && ts.isCallExpression(node) && propertyCallName(node) === 'then') {
+            // `.then(onFulfilled, onRejected)` already handles rejection; only the one-callback form can leak it.
+            if (isRuleEnabled(context.config, 'ERR004') && ts.isCallExpression(node) && propertyCallName(node) === 'then' && node.arguments.length < 2) {
                 const chain = outerPromiseChain(node);
                 if (chain === node && propertyCallName(chain) !== 'catch') {
                     const statement = ts.findAncestor(chain, ts.isExpressionStatement);

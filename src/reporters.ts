@@ -95,6 +95,7 @@ function renderCoverage(summary: ScanSummary, width: number): string[] {
     if (coverage.generatedFilesSkipped > 0) skipped.push(plural(coverage.generatedFilesSkipped, 'generated file'));
     if (coverage.tooLargeFilesSkipped.length > 0) skipped.push(`${plural(coverage.tooLargeFilesSkipped.length, 'oversized file')}`);
     if (coverage.binaryFilesSkipped > 0) skipped.push(plural(coverage.binaryFilesSkipped, 'binary file'));
+    if (coverage.nonProductionFindingsHidden > 0) skipped.push(`${plural(coverage.nonProductionFindingsHidden, 'test/example finding')} hidden`);
     lines.push(`  ${color.dim('Lines of code:')} ${summary.metrics.sourceLOC.toLocaleString()} ${color.dim('source ·')} ${summary.metrics.testLOC.toLocaleString()} ${color.dim('test')}${skipped.length ? `   ${color.dim(`Skipped: ${skipped.join(', ')}`)}` : ''}`);
     const languages = Object.entries(coverage.languages)
         .sort((a, b) => b[1] - a[1])
@@ -349,6 +350,7 @@ export function formatMetrics(summary: ScanSummary): string {
     if (summary.coverage) {
         lines.push(row('otherFilesSecretScanned', String(summary.coverage.textFilesScanned)));
         lines.push(row('generatedFilesSkipped', String(summary.coverage.generatedFilesSkipped)));
+        lines.push(row('nonProductionFindingsHidden', String(summary.coverage.nonProductionFindingsHidden)));
     }
 
     lines.push('', sectionHeading('Structure', width));

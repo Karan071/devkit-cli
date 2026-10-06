@@ -25,7 +25,7 @@ export function runHygieneRules(context: RuleContext): Finding[] {
         const sourceFile = context.program.getSourceFile(file);
         if (!sourceFile) continue;
         const relativePath = path.relative(context.projectRoot, file).replace(/\\/g, '/');
-        const isCliEntryFile = CLI_LIBRARY_IMPORT.test(text);
+        const isCliEntryFile = CLI_LIBRARY_IMPORT.test(text) || text.startsWith('#!');
         const visit = (node: ts.Node): void => {
             if (isRuleEnabled(context.config, 'HYGIENE001') && ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) &&
                 ts.isIdentifier(node.expression.expression) && node.expression.expression.text === 'console' &&
