@@ -205,7 +205,8 @@ program
     .description('Preview findings marked as safe to fix')
     .action((target: string | undefined) => {
         const summary = scanWithProgress(resolveTarget(target));
-        const safeFixes = summary.findings.filter((finding) => finding.fixAvailable);
+        // "Safe" needs the rule to offer a fix AND enough confidence that nothing else depends on the target.
+        const safeFixes = summary.findings.filter((finding) => finding.fixAvailable && (finding.confidence === 'CERTAIN' || finding.confidence === 'HIGH'));
 
         console.log('Safe fix preview');
         if (safeFixes.length === 0) {

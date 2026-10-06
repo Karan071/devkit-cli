@@ -5,8 +5,9 @@ import type { Finding } from '../types';
 import { buildFinding } from '../finding';
 import { isRuleEnabled } from '../config';
 import { isTestFile, readFileSafe } from '../discovery';
+import { classifyFile } from '../fileKind';
 import { lineAndColumn } from '../ast/walk';
-import { SECRET_PATTERNS, looksHighEntropy } from './secretPatterns';
+import { SECRET_PATTERNS, isPublicOrDemoJwt, looksHighEntropy, looksLikeNonSecretValue } from './secretPatterns';
 
 const SECRET_PATTERN = /\b(API_KEY|SECRET|TOKEN|PASSWORD|PRIVATE_KEY)\b\s*[:=]\s*["'`]([^"'`]{4,})["'`]/i;
 const WEAK_HASH_ALGORITHMS = /^(md5|sha1|des|rc4)$/i;
@@ -18,6 +19,94 @@ function calleeName(expression: ts.Expression): string | null {
     if (ts.isIdentifier(expression)) return expression.text;
     if (ts.isPropertyAccessExpression(expression)) return expression.name.text;
     return null;
+}
+
+const CHILD_PROCESS_MODULE = /(?:^|[\\/])child_process(?:\.d\.[cm]?ts|\.[cm]?js)?$/;
+
+function declarationOrigins(checker: ts.TypeChecker, expression: ts.Expression): { files: string[]; modules: string[] } {
+    const callee = ts.isPropertyAccessExpression(expression) ? expression.name : expression;
+    let symbol = checker.getSymbolAtLocation(callee);
+    const modules: string[] = [];
+    // Follow `import { exec as run }` / `const { exec } = require('child_process')` back to the module.
+    for (const declaration of symbol?.declarations ?? []) {
+        const importDeclaration = ts.findAncestor(declaration, ts.isImportDeclaration);
+        if (importDeclaration && ts.isStringLiteral(importDeclaration.moduleSpecifier)) modules.push(importDeclaration.moduleSpecifier.text);
+        if (ts.isVariableDeclaration(declaration) && declaration.initializer) {
+            const required = ts.isCallExpression(declaration.initializer) ? declaration.initializer : undefined;
+            const arg = required?.arguments[0];
+            if (required && ts.isIdentifier(required.expression) && required.expression.text === 'require' && arg && ts.isStringLiteral(arg)) modules.push(arg.text);
+        }
+    }
+    if (symbol && symbol.flags & ts.SymbolFlags.Alias) {
+        try { symbol = checker.getAliasedSymbol(symbol); } catch { /* unresolved alias: keep what we have */ }
+    }
+    return { files: (symbol?.declarations ?? []).map((declaration) => declaration.getSourceFile().fileName), modules };
+}
+
+/**
+ * Whether the call can be the Node child_process API. Decided from where the callee is declared, not
+ * from its name: `/re/.exec(s)` and `db.exec(sql)` share the name `exec` but not the declaration.
+ * `module.exec` on a namespace import (`cp.exec`) is resolved through the namespace's module.
+ */
+function mayBeShellExecution(checker: ts.TypeChecker, call: ts.CallExpression, importedModules: Set<string>): boolean {
+    const target = call.expression;
+    if (ts.isPropertyAccessExpression(target)) {
+        let receiverType: ts.Type | undefined;
+        try { receiverType = checker.getTypeAtLocation(target.expression); } catch { receiverType = undefined; }
+        const receiverName = receiverType?.getSymbol()?.getName();
+        if (receiverName === 'RegExp' || (receiverType && (receiverType.flags & ts.TypeFlags.StringLike))) return false;
+        if (ts.isRegularExpressionLiteral(target.expression)) return false;
+
+        const receiver = ts.isIdentifier(target.expression) ? checker.getSymbolAtLocation(target.expression) : undefined;
+        for (const declaration of receiver?.declarations ?? []) {
+            const importDeclaration = ts.findAncestor(declaration, ts.isImportDeclaration);
+            if (importDeclaration && ts.isStringLiteral(importDeclaration.moduleSpecifier)) {
+                return /^(?:node:)?child_process$/.test(importDeclaration.moduleSpecifier.text);
+            }
+        }
+    }
+
+    const origins = declarationOrigins(checker, target);
+    if (origins.files.some((file) => CHILD_PROCESS_MODULE.test(file))) return true;
+    if (origins.modules.some((module) => /^(?:node:)?child_process$/.test(module))) return true;
+    // Nothing resolved (untyped code): fall back to whether the file pulls in child_process at all.
+    return origins.files.length === 0 && origins.modules.length === 0 && (importedModules.has('child_process') || importedModules.has('node:child_process'));
+}
+
+/** The name a callee was exported under, so `import { exec as run }` still reads as `exec`. */
+function importedCalleeName(checker: ts.TypeChecker, expression: ts.Expression): string | null {
+    if (!ts.isIdentifier(expression)) return null;
+    for (const declaration of checker.getSymbolAtLocation(expression)?.declarations ?? []) {
+        if (ts.isImportSpecifier(declaration)) return (declaration.propertyName ?? declaration.name).text;
+        if (ts.isBindingElement(declaration) && ts.isIdentifier(declaration.name)) {
+            const property = declaration.propertyName ?? declaration.name;
+            if (ts.isIdentifier(property)) return property.text;
+        }
+    }
+    return null;
+}
+
+type HtmlSource = 'static' | 'serialized' | 'dynamic';
+
+/** What flows into an HTML sink: a literal can't be attacker-controlled, serialized JSON rarely can, anything else might be. */
+function classifyHtmlSource(expression: ts.Expression | undefined): HtmlSource {
+    if (!expression) return 'dynamic';
+    let value = expression;
+    while (ts.isParenthesizedExpression(value) || ts.isAsExpression(value) || ts.isNonNullExpression(value)) value = value.expression;
+    if (ts.isStringLiteral(value) || ts.isNoSubstitutionTemplateLiteral(value)) return 'static';
+    if (ts.isCallExpression(value) && ts.isPropertyAccessExpression(value.expression) &&
+        ts.isIdentifier(value.expression.expression) && value.expression.expression.text === 'JSON' && value.expression.name.text === 'stringify') return 'serialized';
+    return 'dynamic';
+}
+
+/** The expression assigned to `__html` in `dangerouslySetInnerHTML={{ __html: ... }}`. */
+function jsxHtmlValue(attribute: ts.JsxAttribute): ts.Expression | undefined {
+    const initializer = attribute.initializer;
+    if (!initializer || !ts.isJsxExpression(initializer) || !initializer.expression || !ts.isObjectLiteralExpression(initializer.expression)) return undefined;
+    for (const property of initializer.expression.properties) {
+        if (ts.isPropertyAssignment(property) && property.name.getText() === '__html') return property.initializer;
+    }
+    return undefined;
 }
 
 function isDynamicString(expression: ts.Expression): boolean {
@@ -68,6 +157,8 @@ function hasPathSanitizer(node: ts.Node): boolean {
 const CONFIG_SECRET_PATTERN = /\b([A-Za-z0-9_.-]*(?:api[_-]?key|secret|token|passw(?:or)?d|private[_-]?key|access[_-]?key|client[_-]?secret|auth)[A-Za-z0-9_.-]*)\b["']?\s*[:=]\s*["']?([^\s"',;}]{8,})/i;
 const PLACEHOLDER_VALUE = /example|sample|dummy|placeholder|changeme|your[_-]|xxxx|<[^>]*>|\$\{|\{\{|process\.env|^\*+$/i;
 const DOCUMENTATION_FILE = /\.(?:md|mdx|markdown|rst|txt|adoc)$/i;
+// `.env.example`, `.env.local.sample`, `config.template.toml`: files whose whole purpose is to hold placeholders.
+const EXAMPLE_CONFIG_FILE = /(?:^|[./_-])(?:example|sample|template|dist)(?:[./_-]|$)/i;
 
 function runSecretScan(context: RuleContext): Finding[] {
     if (!isRuleEnabled(context.config, 'SEC001')) return [];
@@ -79,20 +170,24 @@ function runSecretScan(context: RuleContext): Finding[] {
         const text = readFileSafe(file);
         const relativePath = path.relative(context.projectRoot, file).replace(/\\/g, '/');
         const lines = text.split(/\r\n|\r|\n/);
-        const isTestFixture = isTestFile(relativePath) || /(?:^|\/)(?:fixtures?|__mocks__)(?:\/|$)/i.test(relativePath);
+        // Sample data in tests, fixtures, benchmarks and examples (a JWT to parse, a PEM for a TLS test) is not a leaked credential.
+        const isTestFixture = isTestFile(relativePath) || /(?:^|\/)(?:fixtures?|__mocks__)(?:\/|$)/i.test(relativePath) ||
+            ['test', 'typeTest', 'fixture', 'benchmark', 'example'].includes(classifyFile(relativePath));
         const isSource = sourceFiles.has(file);
-        const isDocumentation = DOCUMENTATION_FILE.test(relativePath);
+        const isDocumentation = DOCUMENTATION_FILE.test(relativePath) || EXAMPLE_CONFIG_FILE.test(path.basename(relativePath));
 
         for (let i = 0; i < lines.length; i += 1) {
             const providerPattern = SECRET_PATTERNS.find((pattern) => pattern.regex.test(lines[i]));
             let fallbackMatch: RegExpMatchArray | null = null;
             if (!providerPattern && !isTestFixture && !isDocumentation) {
                 const candidate = lines[i].match(isSource ? SECRET_PATTERN : CONFIG_SECRET_PATTERN);
-                if (candidate && !PLACEHOLDER_VALUE.test(candidate[2])) fallbackMatch = candidate;
+                if (candidate && !PLACEHOLDER_VALUE.test(candidate[2]) && !looksLikeNonSecretValue(candidate[2])) fallbackMatch = candidate;
             }
             if (providerPattern || (fallbackMatch && looksHighEntropy(fallbackMatch[2], isSource ? 20 : 16))) {
                 // Fixtures and docs legitimately carry example credentials; keep them visible but discounted.
-                const discounted = isTestFixture || isDocumentation || /EXAMPLE/.test(lines[i]);
+                const matchedText = providerPattern ? (lines[i].match(providerPattern.regex)?.[0] ?? '') : '';
+                const publicByDesign = providerPattern?.id === 'jwt' && isPublicOrDemoJwt(matchedText);
+                const discounted = isTestFixture || isDocumentation || publicByDesign || /EXAMPLE/.test(lines[i]);
                 findings.push(
                     buildFinding({
                         ruleId: 'SEC001',
@@ -139,6 +234,7 @@ function runSecretScan(context: RuleContext): Finding[] {
 
 function runAstSecurityChecks(context: RuleContext): Finding[] {
     const findings: Finding[] = [];
+    const checker = context.program.getTypeChecker();
 
     for (const file of context.files) {
         const sourceFile = context.program.getSourceFile(file);
@@ -146,6 +242,7 @@ function runAstSecurityChecks(context: RuleContext): Finding[] {
 
         const relativePath = path.relative(context.projectRoot, file).replace(/\\/g, '/');
         const imports = context.moduleGraph.importsByFile.get(file) ?? [];
+        const importedModules = new Set(imports.map((item) => item.specifier));
         const importedPackages = new Set(imports.filter((item) => !item.isRelative).map((item) => item.specifier.startsWith('@') ? item.specifier.split('/').slice(0, 2).join('/') : item.specifier.split('/')[0]));
 
         const visit = (node: ts.Node): void => {
@@ -172,7 +269,8 @@ function runAstSecurityChecks(context: RuleContext): Finding[] {
                     );
                 }
 
-                if (isRuleEnabled(context.config, 'SEC003') && name && EXEC_FUNCTION_NAMES.has(name) && node.arguments.length > 0) {
+                const execName = name && EXEC_FUNCTION_NAMES.has(name) ? name : importedCalleeName(checker, node.expression);
+                if (isRuleEnabled(context.config, 'SEC003') && execName && EXEC_FUNCTION_NAMES.has(execName) && node.arguments.length > 0 && mayBeShellExecution(checker, node, importedModules)) {
                     const isDynamic = isDynamicCommandArgument(node);
 
                     if (isDynamic) {
@@ -187,7 +285,7 @@ function runAstSecurityChecks(context: RuleContext): Finding[] {
                                 line,
                                 column,
                                 message: 'Dangerous command execution',
-                                description: `${name}() is invoked with a dynamically built command string, risking command injection.`,
+                                description: `${execName}() is invoked with a dynamically built command string, risking command injection.`,
                                 evidence: node.getText().slice(0, 160),
                                 suggestion: 'Use execFile/spawn with an argument array instead of a concatenated shell string.',
                                 fixAvailable: false
@@ -292,7 +390,8 @@ function runAstSecurityChecks(context: RuleContext): Finding[] {
                     ts.isBinaryExpression(node) &&
                     node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
                     ts.isPropertyAccessExpression(node.left) &&
-                    (node.left.name.text === 'innerHTML' || node.left.name.text === 'outerHTML')
+                    (node.left.name.text === 'innerHTML' || node.left.name.text === 'outerHTML') &&
+                    classifyHtmlSource(node.right) !== 'static'
                 ) {
                     const { line, column } = lineAndColumn(sourceFile, node.getStart());
                     findings.push(
@@ -313,14 +412,15 @@ function runAstSecurityChecks(context: RuleContext): Finding[] {
                     );
                 }
 
-                if (ts.isJsxAttribute(node) && node.name.getText() === 'dangerouslySetInnerHTML') {
+                const jsxSource = ts.isJsxAttribute(node) && node.name.getText() === 'dangerouslySetInnerHTML' ? classifyHtmlSource(jsxHtmlValue(node)) : null;
+                if (ts.isJsxAttribute(node) && jsxSource && jsxSource !== 'static') {
                     const { line, column } = lineAndColumn(sourceFile, node.getStart());
                     findings.push(
                         buildFinding({
                             ruleId: 'SEC004',
                             category: 'security',
                             severity: 'MEDIUM',
-                            confidence: 'MEDIUM',
+                            confidence: jsxSource === 'serialized' ? 'LOW' : 'MEDIUM',
                             file: relativePath,
                             line,
                             column,

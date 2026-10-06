@@ -54,6 +54,45 @@ function classifyUnusedDiagnostic(
     return { ruleId: 'DEAD003', title: 'Unused variable', fixAvailable: true };
 }
 
+/**
+ * `const [value, setValue] = useState()` where only `value` is unused: deleting the variable alone leaves
+ * the setter (and usually an effect that feeds it) behind, so it is not a safe mechanical fix.
+ */
+function pairedSetterName(node: ts.Node, sourceFile: ts.SourceFile): string | null {
+    const element = ts.findAncestor(node, ts.isBindingElement);
+    const pattern = element?.parent;
+    if (!element || !pattern || !ts.isArrayBindingPattern(pattern)) return null;
+    for (const sibling of pattern.elements) {
+        if (sibling === element || !ts.isBindingElement(sibling) || !ts.isIdentifier(sibling.name)) continue;
+        const name = sibling.name.text;
+        let references = 0;
+        const count = (current: ts.Node): void => {
+            if (ts.isIdentifier(current) && current.text === name) references += 1;
+            ts.forEachChild(current, count);
+        };
+        count(sourceFile);
+        if (references > 1) return name;
+    }
+    return null;
+}
+
+/**
+ * "After-used" semantics for parameters: `(req, res) => res.send()` must keep `req` because `res` is
+ * positional, so a parameter is only dead when nothing after it in the list is used either.
+ */
+function isRequiredByLaterParameter(node: ts.Node, unusedStarts: Set<number>): boolean {
+    const parameter = ts.findAncestor(node, ts.isParameter);
+    const list = parameter?.parent;
+    if (!parameter || !list || !('parameters' in list)) return false;
+    const parameters = (list as ts.SignatureDeclarationBase).parameters;
+    const position = parameters.indexOf(parameter);
+    return parameters.slice(position + 1).some((later) => !unusedStarts.has(later.name.getStart()));
+}
+
+function isIntentionallyUnusedName(name: string): boolean {
+    return name.startsWith('_');
+}
+
 function detectUnusedViaDiagnostics(context: RuleContext): Finding[] {
     const findings: Finding[] = [];
 
@@ -71,6 +110,8 @@ function detectUnusedViaDiagnostics(context: RuleContext): Finding[] {
         }
 
         const relativePath = path.relative(context.projectRoot, file).replace(/\\/g, '/');
+        const unusedStarts = new Set(diagnostics.filter((d) => d.start !== undefined && UNUSED_DIAGNOSTIC_CODES.has(d.code)).map((d) => d.start as number));
+        const isTypeScript = /\.[cm]?tsx?$/i.test(file);
 
         for (const diagnostic of diagnostics) {
             if (diagnostic.start === undefined || !UNUSED_DIAGNOSTIC_CODES.has(diagnostic.code)) {
@@ -78,7 +119,17 @@ function detectUnusedViaDiagnostics(context: RuleContext): Finding[] {
             }
 
             const node = findNodeAtPosition(sourceFile, diagnostic.start);
-            const { ruleId, title, fixAvailable } = classifyUnusedDiagnostic(node, diagnostic.code);
+            const classified = classifyUnusedDiagnostic(node, diagnostic.code);
+            const { ruleId, title } = classified;
+            const unusedName = sourceFile.text.slice(diagnostic.start, diagnostic.start + (diagnostic.length ?? 0));
+            // A leading underscore is the standard way to say "unused on purpose".
+            if ((ruleId === 'DEAD003' || ruleId === 'DEAD006') && isIntentionallyUnusedName(unusedName)) continue;
+            if (ruleId === 'DEAD006') {
+                if (isTypeScript && context.typeSettings?.hasTsConfig && !context.typeSettings.noUnusedParameters) continue;
+                if (isRequiredByLaterParameter(node, unusedStarts)) continue;
+            }
+            const companion = ruleId === 'DEAD003' ? pairedSetterName(node, sourceFile) : null;
+            const fixAvailable = classified.fixAvailable && !companion;
 
             if (!isRuleEnabled(context.config, ruleId)) {
                 continue;
@@ -97,12 +148,17 @@ function detectUnusedViaDiagnostics(context: RuleContext): Finding[] {
                     line,
                     column,
                     message: title,
-                    description: message,
-                    evidence: sourceFile.text.slice(node.getStart(), Math.min(node.getEnd(), node.getStart() + 160)),
+                    description: companion
+                        ? `${message} Its companion "${companion}" is still referenced, so code that only feeds this value (effects, listeners) may become dead with it.`
+                        : message,
+                    // The compiler's own span names exactly what is unused (one specifier, not the whole import line).
+                    evidence: sourceFile.text.slice(diagnostic.start, diagnostic.start + Math.min(diagnostic.length ?? node.getWidth(), 160)),
                     suggestion:
-                        fixAvailable
-                            ? 'Remove the unused declaration.'
-                            : 'Remove it if truly unused, or export it if it is part of the public API.',
+                        companion
+                            ? `Remove "${companion}" and any effect or handler that only updates it, together with this value.`
+                            : fixAvailable
+                                ? 'Remove the unused declaration.'
+                                : 'Remove it if truly unused, or export it if it is part of the public API.',
                     fixAvailable
                 })
             );

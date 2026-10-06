@@ -1,13 +1,15 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import ts from 'typescript';
 import { SOURCE_EXTENSIONS, isTestFile, readFileSafe } from './discovery';
 import { parseSourceFile } from './ast/parse';
 import { forEachNode, lineAndColumn } from './ast/walk';
 import type { DevkitConfig } from './config';
-import { matchesAnyGlob } from './glob';
-import { createResolutionContext, resolveSpecifier, type SpecifierKind } from './moduleResolution';
+import { isFrameworkEntryFile } from './frameworkConventions';
+import { createResolutionContext, loadTsConfigFor, matchesPathAlias, resolveSpecifier, type SpecifierKind } from './moduleResolution';
 
-const TOOL_CONFIG_FILE = /(?:^|\/)(?:[\w.-]+\.config|\.[\w-]+rc)\.[cm]?[jt]sx?$/;
+// Tool config files and task-runner entry files (vite.config.ts, .eslintrc.js, gulpfile.js, karma.conf.js, ...).
+const TOOL_CONFIG_FILE = /(?:^|\/)(?:(?:[\w.-]+\.(?:config|conf)|\.[\w-]+rc)\.[cm]?[jt]sx?|(?:gulpfile|gruntfile|jakefile|fastfile)(?:\.[\w-]+)?\.[cm]?[jt]sx?)$/i;
 
 export interface ImportInfo {
     specifier: string;
@@ -19,6 +21,10 @@ export interface ImportInfo {
     isSideEffectOnly: boolean;
     line: number;
     kind: SpecifierKind;
+    /** `import type` / `export type`: erased at build time, so it creates no runtime dependency or cycle. */
+    isTypeOnly: boolean;
+    /** Matches a tsconfig `paths` alias (`@/*`), so it names project code rather than an npm package. */
+    isPathAlias: boolean;
 }
 
 export interface ExportInfo {
@@ -54,7 +60,7 @@ function extractImportsAndExports(
         specifier: string,
         kind: SpecifierKind,
         line: number,
-        details: Partial<Pick<ImportInfo, 'namedImports' | 'hasDefaultImport' | 'hasNamespaceImport' | 'isSideEffectOnly'>> = {}
+        details: Partial<Pick<ImportInfo, 'namedImports' | 'hasDefaultImport' | 'hasNamespaceImport' | 'isSideEffectOnly' | 'isTypeOnly'>> = {}
     ): ImportInfo => {
         const info: ImportInfo = {
             specifier,
@@ -65,7 +71,9 @@ function extractImportsAndExports(
             hasNamespaceImport: details.hasNamespaceImport ?? false,
             isSideEffectOnly: details.isSideEffectOnly ?? false,
             line,
-            kind
+            kind,
+            isTypeOnly: details.isTypeOnly ?? false,
+            isPathAlias: !specifier.startsWith('.') && matchesPathAlias(file, specifier, resolutionContext)
         };
         imports.push(info);
         return info;
@@ -77,15 +85,19 @@ function extractImportsAndExports(
             const namedImports: string[] = [];
             let hasDefaultImport = false;
             let hasNamespaceImport = false;
+            let allSpecifiersTypeOnly = false;
             if (clause) {
                 hasDefaultImport = !!clause.name;
                 if (clause.namedBindings && ts.isNamespaceImport(clause.namedBindings)) hasNamespaceImport = true;
                 else if (clause?.namedBindings && ts.isNamedImports(clause.namedBindings)) {
                     for (const element of clause.namedBindings.elements) namedImports.push((element.propertyName ?? element.name).text);
+                    // `import { type A, type B }` is as erased as `import type { A, B }`.
+                    allSpecifiersTypeOnly = !clause.name && clause.namedBindings.elements.length > 0 && clause.namedBindings.elements.every((element) => element.isTypeOnly);
                 }
             }
             addImport(statement.moduleSpecifier.text, 'import', lineAndColumn(sourceFile, statement.getStart()).line, {
-                namedImports, hasDefaultImport, hasNamespaceImport, isSideEffectOnly: !clause
+                namedImports, hasDefaultImport, hasNamespaceImport, isSideEffectOnly: !clause,
+                isTypeOnly: (!!clause && clause.isTypeOnly) || allSpecifiersTypeOnly
             });
             continue;
         }
@@ -101,14 +113,21 @@ function extractImportsAndExports(
             if (statement.moduleSpecifier && ts.isStringLiteral(statement.moduleSpecifier)) {
                 const specifier = statement.moduleSpecifier.text;
                 if (!statement.exportClause) {
-                    const info = addImport(specifier, 'exportFrom', line, { hasNamespaceImport: true });
+                    const info = addImport(specifier, 'exportFrom', line, { hasNamespaceImport: true, isTypeOnly: statement.isTypeOnly });
                     if (info.resolved) reExportAllTargets.push(info.resolved);
+                    continue;
+                }
+                if (ts.isNamespaceExport(statement.exportClause)) {
+                    // `export * as ns from './x'` exposes the whole module under one name: the target is fully used.
+                    exports.push({ name: statement.exportClause.name.text, kind: 'named', line });
+                    addImport(specifier, 'exportFrom', line, { hasNamespaceImport: true, isTypeOnly: statement.isTypeOnly });
                     continue;
                 }
                 if (ts.isNamedExports(statement.exportClause)) {
                     for (const element of statement.exportClause.elements) exports.push({ name: element.name.text, kind: 'named', line });
                     addImport(specifier, 'exportFrom', line, {
-                        namedImports: statement.exportClause.elements.map((element) => (element.propertyName ?? element.name).text)
+                        namedImports: statement.exportClause.elements.map((element) => (element.propertyName ?? element.name).text),
+                        isTypeOnly: statement.isTypeOnly
                     });
                 }
                 continue;
@@ -181,21 +200,109 @@ function extractImportsAndExports(
     return { imports, exports, reExportAllTargets, dynamicRequireHints };
 }
 
-function resolveEntryPoints(projectRoot: string, files: string[], packageJson: Record<string, unknown> | null, config: DevkitConfig): Set<string> {
-    const entryPoints = new Set<string>();
+// package.json fields that cannot be a source-file reference (or are handled explicitly elsewhere).
+const NON_REFERENCE_FIELDS = new Set([
+    'dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies', 'peerDependenciesMeta', 'bundledDependencies',
+    'scripts', 'name', 'version', 'description', 'keywords', 'license', 'author', 'contributors', 'homepage', 'bugs', 'repository',
+    'funding', 'files', 'main', 'module', 'browser', 'bin', 'exports', 'types', 'typings', 'engines', 'os', 'cpu', 'packageManager'
+]);
+
+// A relative or bare path to a JS/TS file inside free text (JSON, YAML, TOML, Dockerfile, Procfile, shell, CI).
+const SOURCE_PATH_REFERENCE = /(?:^|[\s"'`=:(,[])((?:\.{1,2}\/)?[\w@~$.-]+(?:\/[\w@~$.-]+)*\.[cm]?[jt]sx?)(?=$|[\s"'`,;:)\]])/g;
+// A quoted relative path inside a tool's own config (`preset: '../jest.preset.js'`, `setupFiles: ['./setup']`).
+const QUOTED_RELATIVE_REFERENCE = /["'`](\.{1,2}\/[^"'`\n]+)["'`]/g;
+const DOCUMENTATION_TEXT = /\.(?:md|mdx|markdown|rst|txt|adoc)$/i;
+
+/**
+ * Source files that other tooling points at by path, so no import ever mentions them: the `main` of an Nx
+ * project.json, a Dockerfile `CMD`, a CI step, a jest preset. A path in configuration is a use.
+ */
+function resolveConfigReferences(projectRoot: string, files: string[], textFiles: string[], entryPoints: Set<string>): void {
+    const fileSet = new Set(files);
+    const addReference = (bases: string[], reference: string): void => {
+        for (const base of bases) {
+            const absolute = path.resolve(base, reference);
+            if (fileSet.has(absolute)) { entryPoints.add(absolute); return; }
+            for (const extension of SOURCE_EXTENSIONS) {
+                if (fileSet.has(absolute + extension)) { entryPoints.add(absolute + extension); return; }
+                if (fileSet.has(path.join(absolute, `index${extension}`))) { entryPoints.add(path.join(absolute, `index${extension}`)); return; }
+            }
+        }
+    };
+
+    for (const file of textFiles) {
+        if (DOCUMENTATION_TEXT.test(file)) continue;
+        const text = readFileSafe(file);
+        if (!text || text.length > 500_000) continue;
+        const bases = [path.dirname(file), projectRoot];
+        for (const match of text.matchAll(SOURCE_PATH_REFERENCE)) addReference(bases, match[1]);
+    }
+
+    for (const file of files) {
+        if (!TOOL_CONFIG_FILE.test(path.relative(projectRoot, file).replace(/\\/g, '/'))) continue;
+        const text = readFileSafe(file);
+        for (const match of text.matchAll(QUOTED_RELATIVE_REFERENCE)) addReference([path.dirname(file)], match[1]);
+    }
+}
+
+/** Output folders a library's `exports`/`main` typically point into, mapped back to the sources they were built from. */
+const BUILD_OUTPUT_EXTENSIONS = /(?:\.d\.[cm]?ts|\.[cm]?jsx?)$/;
+
+function sourceCandidatesForBuildOutput(packageRoot: string, relativePath: string, fileSet: Set<string>): string[] {
+    const normalized = relativePath.replace(/^\.\//, '').replace(/\\/g, '/');
+    if (!BUILD_OUTPUT_EXTENSIONS.test(normalized)) return [];
+    const withoutExtension = normalized.replace(BUILD_OUTPUT_EXTENSIONS, '');
+
+    const config = loadTsConfigFor(packageRoot);
+    const outDir = config?.options.outDir ? path.relative(packageRoot, config.options.outDir).replace(/\\/g, '/') : null;
+    const rootDir = config?.options.rootDir ? path.relative(packageRoot, config.options.rootDir).replace(/\\/g, '/') : null;
+
+    const bases = new Set<string>();
+    // The project's own mapping first: <outDir>/x.js was built from <rootDir>/x.ts.
+    if (outDir && withoutExtension.startsWith(`${outDir}/`)) bases.add(`${rootDir && rootDir !== '.' ? `${rootDir}/` : ''}${withoutExtension.slice(outDir.length + 1)}`);
+    // Otherwise assume the conventional layout: the first folder is the output, sources live in src/ or the package root.
+    const [, ...rest] = withoutExtension.split('/');
+    if (rest.length > 0) {
+        bases.add(`src/${rest.join('/')}`);
+        bases.add(rest.join('/'));
+    }
+    bases.add(`src/${withoutExtension}`);
+    bases.add(withoutExtension);
+
+    const found: string[] = [];
+    for (const base of bases) {
+        const absolute = path.resolve(packageRoot, base);
+        for (const extension of SOURCE_EXTENSIONS) {
+            if (fileSet.has(absolute + extension)) found.push(absolute + extension);
+            if (fileSet.has(path.join(absolute, `index${extension}`))) found.push(path.join(absolute, `index${extension}`));
+        }
+    }
+    return found;
+}
+
+function resolvePackageEntryPoints(
+    packageRoot: string,
+    files: string[],
+    packageJson: Record<string, unknown> | null,
+    entryPoints: Set<string>
+): void {
     const fileSet = new Set(files);
 
     const addFromRelativePath = (relativePath: string): void => {
-        const resolved = path.resolve(projectRoot, relativePath);
+        const resolved = path.resolve(packageRoot, relativePath);
         if (fileSet.has(resolved)) {
             entryPoints.add(resolved);
             return;
         }
+        let found = false;
         for (const ext of SOURCE_EXTENSIONS) {
             if (fileSet.has(resolved + ext)) {
                 entryPoints.add(resolved + ext);
+                found = true;
             }
         }
+        // `main: dist/index.js` while only src/index.ts is checked in.
+        if (!found) for (const source of sourceCandidatesForBuildOutput(packageRoot, relativePath, fileSet)) entryPoints.add(source);
     };
 
     const scanStringForPaths = (value: string): void => {
@@ -213,6 +320,20 @@ function resolveEntryPoints(projectRoot: string, files: string[], packageJson: R
             addFromRelativePath(packageJson.main);
         }
 
+        // Alternate entry fields consumed by bundlers/CDNs. `browser` may also be a map of file replacements
+        // (`"./lib/node.js": "./lib/browser.js"`): both sides are loaded depending on the target platform.
+        for (const field of ['module', 'jsnext:main', 'unpkg', 'jsdelivr', 'react-native', 'es2015', 'esnext']) {
+            if (typeof packageJson[field] === 'string') addFromRelativePath(packageJson[field] as string);
+        }
+        const browserField = packageJson.browser;
+        if (typeof browserField === 'string') addFromRelativePath(browserField);
+        else if (browserField && typeof browserField === 'object') {
+            for (const [from, to] of Object.entries(browserField as Record<string, unknown>)) {
+                if (from.startsWith('.')) addFromRelativePath(from);
+                if (typeof to === 'string' && to.startsWith('.')) addFromRelativePath(to);
+            }
+        }
+
         if (typeof packageJson.bin === 'string') {
             addFromRelativePath(packageJson.bin);
         } else if (packageJson.bin && typeof packageJson.bin === 'object') {
@@ -228,6 +349,19 @@ function resolveEntryPoints(projectRoot: string, files: string[], packageJson: R
             }
         }
 
+        // Tool configuration embedded in package.json names source files too (`"prisma": { "seed": "ts-node src/seed.ts" }`).
+        const collectStrings = (value: unknown, into: string[]): void => {
+            if (typeof value === 'string') into.push(value);
+            else if (Array.isArray(value)) value.forEach((item) => collectStrings(item, into));
+            else if (value && typeof value === 'object') Object.values(value as Record<string, unknown>).forEach((item) => collectStrings(item, into));
+        };
+        for (const [field, value] of Object.entries(packageJson)) {
+            if (NON_REFERENCE_FIELDS.has(field)) continue;
+            const strings: string[] = [];
+            collectStrings(value, strings);
+            strings.forEach(scanStringForPaths);
+        }
+
         const addExportTargets = (value: unknown): void => {
             if (typeof value === 'string') {
                 if (value.startsWith('./')) addFromRelativePath(value.slice(2));
@@ -241,23 +375,54 @@ function resolveEntryPoints(projectRoot: string, files: string[], packageJson: R
             ...((packageJson.dependencies as Record<string, string> | undefined) ?? {}),
             ...((packageJson.devDependencies as Record<string, string> | undefined) ?? {})
         };
-        if (Object.prototype.hasOwnProperty.call(dependencies, 'next')) {
-            const patterns = [
-                'pages/**/*.js', 'pages/**/*.jsx', 'pages/**/*.ts', 'pages/**/*.tsx',
-                'app/**/page.js', 'app/**/page.jsx', 'app/**/page.ts', 'app/**/page.tsx',
-                'app/**/layout.js', 'app/**/layout.jsx', 'app/**/layout.ts', 'app/**/layout.tsx',
-                'app/**/route.js', 'app/**/route.jsx', 'app/**/route.ts', 'app/**/route.tsx',
-                'app/**/loading.js', 'app/**/loading.jsx', 'app/**/loading.ts', 'app/**/loading.tsx',
-                'app/**/error.js', 'app/**/error.jsx', 'app/**/error.ts', 'app/**/error.tsx',
-                'app/**/not-found.js', 'app/**/not-found.jsx', 'app/**/not-found.ts', 'app/**/not-found.tsx',
-                'app/**/middleware.js', 'app/**/middleware.jsx', 'app/**/middleware.ts', 'app/**/middleware.tsx'
-            ];
-            for (const file of files) {
-                const relative = path.relative(projectRoot, file).replace(/\\/g, '/');
-                if (matchesAnyGlob(relative, patterns)) entryPoints.add(file);
+        const declared = new Set(Object.keys(dependencies));
+        for (const file of files) {
+            const relative = path.relative(packageRoot, file).replace(/\\/g, '/');
+            if (relative.startsWith('..') || path.isAbsolute(relative)) continue;
+            if (isFrameworkEntryFile(relative, declared)) entryPoints.add(file);
+        }
+    }
+}
+
+/** Directories (project root and every nested package) that contain a package.json, found by walking up from each source file. */
+function findPackageRoots(projectRoot: string, files: string[]): string[] {
+    const roots = new Set<string>([projectRoot]);
+    const checked = new Map<string, boolean>();
+    for (const file of files) {
+        for (let dir = path.dirname(file); dir.startsWith(projectRoot) && dir !== projectRoot; dir = path.dirname(dir)) {
+            if (checked.has(dir)) {
+                if (checked.get(dir)) break;
+                continue;
+            }
+            const has = fs.existsSync(path.join(dir, 'package.json'));
+            checked.set(dir, has);
+            if (has) {
+                roots.add(dir);
+                break;
             }
         }
     }
+    return [...roots];
+}
+
+function resolveEntryPoints(projectRoot: string, files: string[], packageJson: Record<string, unknown> | null, config: DevkitConfig, textFiles: string[]): Set<string> {
+    const entryPoints = new Set<string>();
+
+    // In a monorepo every package has its own main/exports/bin and its own framework: next in packages/docs
+    // makes app/page.tsx there an entry point even though the root package.json never mentions next.
+    for (const packageRoot of findPackageRoots(projectRoot, files)) {
+        if (packageRoot === projectRoot) {
+            resolvePackageEntryPoints(projectRoot, files, packageJson, entryPoints);
+            continue;
+        }
+        try {
+            resolvePackageEntryPoints(packageRoot, files, JSON.parse(readFileSafe(path.join(packageRoot, 'package.json'))), entryPoints);
+        } catch {
+            // An unreadable nested manifest contributes no entry points.
+        }
+    }
+
+    resolveConfigReferences(projectRoot, files, textFiles, entryPoints);
 
     // Keep the parameter explicit: framework and custom entry conventions are config-dependent.
     void config;
@@ -277,7 +442,8 @@ export function buildModuleGraph(
     projectRoot: string,
     files: string[],
     packageJson: Record<string, unknown> | null,
-    config: DevkitConfig
+    config: DevkitConfig,
+    textFiles: string[] = []
 ): ModuleGraph {
     const fileSet = new Set(files);
     const importsByFile = new Map<string, ImportInfo[]>();
@@ -319,48 +485,96 @@ export function buildModuleGraph(
         edges.set(file, edgeSet);
     }
 
-    const entryPoints = resolveEntryPoints(projectRoot, files, packageJson, config);
+    const entryPoints = resolveEntryPoints(projectRoot, files, packageJson, config, textFiles);
 
     return { importsByFile, exportsByFile, edges, reverseEdges, reExportAllTargets, entryPoints, fileSet, dynamicRequireHints };
 }
 
+/**
+ * One representative cycle per strongly connected component of the *runtime* import graph.
+ *
+ * Type-only imports are erased by the compiler, so they cannot cause an initialization-order problem and
+ * are ignored. Enumerating every simple path through a tangled component would report one real problem
+ * dozens of times, so each component is reported once, as the shortest cycle through its first file.
+ */
 export function findImportCycles(graph: ModuleGraph): string[][] {
-    const cycles: string[][] = [];
-    const visitedGlobal = new Set<string>();
-
-    for (const start of graph.edges.keys()) {
-        if (visitedGlobal.has(start)) {
-            continue;
-        }
-
-        const stack: string[] = [];
-        const onStack = new Set<string>();
-        const visit = (node: string): void => {
-            if (onStack.has(node)) {
-                const cycleStart = stack.indexOf(node);
-                if (cycleStart !== -1) {
-                    cycles.push([...stack.slice(cycleStart), node]);
-                }
-                return;
-            }
-            if (visitedGlobal.has(node)) {
-                return;
-            }
-
-            visitedGlobal.add(node);
-            stack.push(node);
-            onStack.add(node);
-
-            for (const next of graph.edges.get(node) ?? []) {
-                visit(next);
-            }
-
-            stack.pop();
-            onStack.delete(node);
-        };
-
-        visit(start);
+    const runtimeEdges = new Map<string, string[]>();
+    for (const [file, imports] of graph.importsByFile) {
+        const targets = new Set<string>();
+        for (const info of imports) if (info.resolved && !info.isTypeOnly) targets.add(info.resolved);
+        for (const target of graph.reExportAllTargets.get(file) ?? []) targets.add(target);
+        runtimeEdges.set(file, [...targets]);
     }
 
-    return cycles;
+    // Tarjan's algorithm (iterative, to survive deep import chains).
+    let counter = 0;
+    const index = new Map<string, number>();
+    const lowlink = new Map<string, number>();
+    const onStack = new Set<string>();
+    const stack: string[] = [];
+    const components: string[][] = [];
+
+    for (const root of runtimeEdges.keys()) {
+        if (index.has(root)) continue;
+        const work: Array<{ node: string; next: number }> = [{ node: root, next: 0 }];
+        index.set(root, counter); lowlink.set(root, counter); counter += 1;
+        stack.push(root); onStack.add(root);
+
+        while (work.length > 0) {
+            const frame = work[work.length - 1];
+            const targets = runtimeEdges.get(frame.node) ?? [];
+            if (frame.next < targets.length) {
+                const target = targets[frame.next++];
+                if (!runtimeEdges.has(target)) continue;
+                if (!index.has(target)) {
+                    index.set(target, counter); lowlink.set(target, counter); counter += 1;
+                    stack.push(target); onStack.add(target);
+                    work.push({ node: target, next: 0 });
+                } else if (onStack.has(target)) {
+                    lowlink.set(frame.node, Math.min(lowlink.get(frame.node)!, index.get(target)!));
+                }
+                continue;
+            }
+
+            work.pop();
+            if (work.length > 0) {
+                const parent = work[work.length - 1].node;
+                lowlink.set(parent, Math.min(lowlink.get(parent)!, lowlink.get(frame.node)!));
+            }
+            if (lowlink.get(frame.node) === index.get(frame.node)) {
+                const component: string[] = [];
+                let member: string;
+                do {
+                    member = stack.pop()!;
+                    onStack.delete(member);
+                    component.push(member);
+                } while (member !== frame.node);
+                const selfLoop = component.length === 1 && (runtimeEdges.get(component[0]) ?? []).includes(component[0]);
+                if (component.length > 1 || selfLoop) components.push(component);
+            }
+        }
+    }
+
+    return components.map((component) => shortestCycleThrough(component.sort()[0], new Set(component), runtimeEdges));
+}
+
+function shortestCycleThrough(start: string, members: Set<string>, edges: Map<string, string[]>): string[] {
+    const previous = new Map<string, string>();
+    const queue = [start];
+    for (let head = 0; head < queue.length; head += 1) {
+        const node = queue[head];
+        for (const next of edges.get(node) ?? []) {
+            if (!members.has(next)) continue;
+            if (next === start) {
+                const cycle = [start];
+                for (let current = node; current !== start; current = previous.get(current)!) cycle.splice(1, 0, current);
+                return [...cycle, start];
+            }
+            if (!previous.has(next)) {
+                previous.set(next, node);
+                queue.push(next);
+            }
+        }
+    }
+    return [start, start];
 }

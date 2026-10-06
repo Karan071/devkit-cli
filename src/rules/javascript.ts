@@ -12,8 +12,32 @@ function isNullLiteral(node: ts.Node): boolean {
     return node.kind === ts.SyntaxKind.NullKeyword;
 }
 
+/**
+ * A codebase written almost entirely with `var` (Express, most pre-2015 libraries) made that choice as a
+ * style; flagging each declaration buries the real signal. Only a clear, large-scale majority counts -
+ * a few `var`s in an otherwise modern project are still worth a finding.
+ */
+function usesLegacyVarStyle(context: RuleContext): boolean {
+    let vars = 0;
+    let blockScoped = 0;
+    for (const file of context.files) {
+        const sourceFile = context.program.getSourceFile(file);
+        if (!sourceFile) continue;
+        const count = (node: ts.Node): void => {
+            if (ts.isVariableStatement(node)) {
+                if ((node.declarationList.flags & ts.NodeFlags.BlockScoped) === 0) vars += 1;
+                else blockScoped += 1;
+            }
+            ts.forEachChild(node, count);
+        };
+        count(sourceFile);
+    }
+    return vars >= 25 && vars / (vars + blockScoped) >= 0.9;
+}
+
 export function runJavaScriptRules(context: RuleContext): Finding[] {
     const findings: Finding[] = [];
+    const legacyVarStyle = isRuleEnabled(context.config, 'JS001') && usesLegacyVarStyle(context);
 
     for (const file of context.files) {
         const sourceFile = context.program.getSourceFile(file);
@@ -24,6 +48,7 @@ export function runJavaScriptRules(context: RuleContext): Finding[] {
         const visit = (node: ts.Node): void => {
             if (
                 isRuleEnabled(context.config, 'JS001') &&
+                !legacyVarStyle &&
                 ts.isVariableStatement(node) &&
                 (node.declarationList.flags & ts.NodeFlags.BlockScoped) === 0
             ) {

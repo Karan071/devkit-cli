@@ -31,7 +31,10 @@ export function runRedundancyRules(context: RuleContext): Finding[] {
             ) {
                 const comparedExpression = isBooleanLiteral(node.left) ? node.right : node.left;
                 const comparedType = context.program.getTypeChecker().getTypeAtLocation(comparedExpression);
-                if (comparedType.isUnion() && comparedType.types.some((member) => (member.flags & ts.TypeFlags.BooleanLike) === 0)) {
+                // `x === true` is only redundant when x is certainly a boolean. For any/unknown (untyped JS, missing
+                // declarations) or unions with null/undefined/other members it distinguishes real cases.
+                const members = comparedType.isUnion() ? comparedType.types : [comparedType];
+                if (members.some((member) => (member.flags & ts.TypeFlags.BooleanLike) === 0)) {
                     ts.forEachChild(node, visit);
                     return;
                 }

@@ -6,7 +6,8 @@ import type { Finding, Severity } from '../types';
 import { buildFinding } from '../finding';
 import { getRuleThreshold, isRuleEnabled } from '../config';
 
-const DEFAULT_MIN_TOKENS = 40;
+// Identifiers are normalised, so very short windows match declarative boilerplate (`export const X = factory(...)`).
+const DEFAULT_MIN_TOKENS = 60;
 const WINDOW_STEP = 5;
 
 interface Token {
@@ -30,25 +31,53 @@ interface MatchRange {
     startIndexA: number;
     endIndexA: number;
     startIndexB: number;
+    /** How many distinct files contain this block; > 2 means repeated boilerplate rather than one copy-paste. */
+    copies: number;
 }
 
-function importRanges(sourceFile: ts.SourceFile): Array<[number, number]> {
-    return sourceFile.statements
-        .filter((statement) => ts.isImportDeclaration(statement) || ts.isImportEqualsDeclaration(statement) || (ts.isExportDeclaration(statement) && !!statement.moduleSpecifier))
-        .map((statement) => [statement.getStart(sourceFile), statement.getEnd()]);
+/**
+ * Source ranges that are not extractable logic: imports (near-identical across files by nature) and type-level
+ * syntax - type aliases, interfaces, generic parameter lists, overload signatures and `declare`d shapes. Large
+ * generic APIs repeat `E2 extends Env = ...` / overload headers dozens of times by necessity; there is nothing to extract.
+ */
+function nonLogicRanges(sourceFile: ts.SourceFile): Array<[number, number]> {
+    const ranges: Array<[number, number]> = [];
+    const visit = (node: ts.Node): void => {
+        if (ts.isImportDeclaration(node) || ts.isImportEqualsDeclaration(node) || (ts.isExportDeclaration(node) && !!node.moduleSpecifier)) {
+            ranges.push([node.getStart(sourceFile), node.getEnd()]);
+            return;
+        }
+        if (ts.isTypeAliasDeclaration(node) || ts.isInterfaceDeclaration(node) || ts.isModuleDeclaration(node) && !!node.modifiers?.some((m) => m.kind === ts.SyntaxKind.DeclareKeyword)) {
+            ranges.push([node.getStart(sourceFile), node.getEnd()]);
+            return;
+        }
+        if ((ts.isFunctionDeclaration(node) || ts.isMethodDeclaration(node) || ts.isConstructorDeclaration(node)) && !node.body) {
+            ranges.push([node.getStart(sourceFile), node.getEnd()]);
+            return;
+        }
+        if ('typeParameters' in node && (node as ts.SignatureDeclaration).typeParameters?.length) {
+            const list = (node as ts.SignatureDeclaration).typeParameters!;
+            ranges.push([list.pos, list.end]);
+        }
+        ts.forEachChild(node, visit);
+    };
+    visit(sourceFile);
+    return ranges.sort((a, b) => a[0] - b[0]);
 }
 
 function tokenize(sourceFile: ts.SourceFile, languageVariant: ts.LanguageVariant): Token[] {
     const scanner = ts.createScanner(ts.ScriptTarget.ES2022, true, languageVariant, sourceFile.text);
-    // Import headers are near-identical across files by nature (especially tests) and are not
-    // extractable logic, so they are left out of clone detection.
-    const skipped = importRanges(sourceFile);
+    const skipped = nonLogicRanges(sourceFile);
     const tokens: Token[] = [];
+    let rangeIndex = 0;
     let kind = scanner.scan();
 
     while (kind !== ts.SyntaxKind.EndOfFileToken) {
         const pos = scanner.getTokenStart();
-        if (!skipped.some(([start, end]) => pos >= start && pos < end)) {
+        // Ranges are sorted by start; advance past the ones that end before this token (nested ranges are covered by their parent).
+        while (rangeIndex < skipped.length && skipped[rangeIndex][1] <= pos) rangeIndex += 1;
+        const insideSkipped = skipped.slice(rangeIndex, rangeIndex + 8).some(([start, end]) => pos >= start && pos < end);
+        if (!insideSkipped) {
             tokens.push({ text: scanner.getTokenText(), line: sourceFile.getLineAndCharacterOfPosition(pos).line + 1, kind });
         }
         kind = scanner.scan();
@@ -85,6 +114,7 @@ function mergeRanges(ranges: MatchRange[]): MatchRange[] {
             last.endIndexA = Math.max(last.endIndexA, range.endIndexA);
             last.endLineA = Math.max(last.endLineA, range.endLineA);
             last.endLineB = Math.max(last.endLineB, range.endLineB);
+            last.copies = Math.max(last.copies, range.copies);
         } else {
             merged.push({ ...range });
         }
@@ -134,10 +164,18 @@ export function runDuplicationRules(context: RuleContext): Finding[] {
     for (const entries of hashBuckets.values()) {
         if (entries.length < 2) continue;
 
-        for (let i = 0; i < entries.length; i += 1) {
-            for (let j = i + 1; j < entries.length; j += 1) {
-                const a = entries[i];
-                const b = entries[j];
+        // A block present in many files (locale tables, generated-looking adapters) is one pattern, not
+        // N*(N-1)/2 copy-pastes. Report it once, between the first two files, with the true count.
+        const distinctFiles = new Set(entries.map((entry) => entry.file));
+        const copies = distinctFiles.size;
+        const compared = copies >= 3
+            ? entries.filter((entry, index) => index === 0 || (entry.file !== entries[0].file && entries.findIndex((other) => other.file === entry.file) === index)).slice(0, 2)
+            : entries;
+
+        for (let i = 0; i < compared.length; i += 1) {
+            for (let j = i + 1; j < compared.length; j += 1) {
+                const a = compared[i];
+                const b = compared[j];
                 // Within one file, overlapping windows are repetitive code, not a copy-paste.
                 if (a.file === b.file && Math.abs(a.startIndex - b.startIndex) < minTokens) continue;
 
@@ -152,7 +190,8 @@ export function runDuplicationRules(context: RuleContext): Finding[] {
                     endLineB: second.endLine,
                     startIndexA: first.startIndex,
                     endIndexA: first.startIndex + minTokens,
-                    startIndexB: second.startIndex
+                    startIndexB: second.startIndex,
+                    copies
                 });
             }
         }
@@ -166,18 +205,21 @@ export function runDuplicationRules(context: RuleContext): Finding[] {
 
         for (const range of merged) {
             const spanTokens = range.endIndexA - range.startIndexA;
+            // Repetition inside one file is usually a local pattern (a family of similar declarations), so it
+            // has to be substantially larger than the minimum before it reads as copy-paste.
+            if (fileA === fileB && spanTokens < minTokens * 2) continue;
 
             findings.push(
                 buildFinding({
                     ruleId: 'DUP001',
                     category: 'duplication',
                     severity: severityForSpan(spanTokens, minTokens),
-                    confidence: 'MEDIUM',
+                    confidence: range.copies >= 3 ? 'LOW' : 'MEDIUM',
                     file: fileA,
                     line: range.startLineA,
                     column: 1,
                     message: 'Duplicate code block',
-                    description: `Lines ${range.startLineA}-${range.endLineA} closely match ${fileB}:${range.startLineB}-${range.endLineB}.`,
+                    description: `Lines ${range.startLineA}-${range.endLineA} closely match ${fileB}:${range.startLineB}-${range.endLineB}.${range.copies >= 3 ? ` The same block appears in ${range.copies} files, so it is likely intentional repetition (data tables, adapters).` : ''}`,
                     evidence: `${fileB}:${range.startLineB}-${range.endLineB}`,
                     suggestion: 'Extract the shared logic into a reusable function or module.',
                     fixAvailable: false
