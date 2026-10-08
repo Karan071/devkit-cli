@@ -31,5 +31,11 @@ jobs:
       - name: Test
         run: npm test
 
+      - name: Type-check benchmark scripts
+        run: npm run bench:typecheck
+
+      - name: Benchmark gate (planted-issue catch rate and per-rule accuracy)
+        run: npm run bench:check
+
       - name: Self-scan (quality gate)
         run: node dist/cli.js scan --min-score 5
