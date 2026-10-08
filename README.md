@@ -13,15 +13,46 @@ npx devkit-quality scan
 ```
 
 ```
-DevKit Repository Scan
-/path/to/project
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ DevKit • Repository Quality Scan                                             │
+│ ~/projects/my-app                                                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
 
-  7.8/10  Good
-  [███████████████░░░░]
+  8.5 / 10   grade  B   Good
+  █████████████████████████████████████████░░░░░░░
+  Biggest score drains:
+  1. COMPLEX002 High cognitive complexity function  -0.49 (54 findings)
+  2. COMPLEX001 High cyclomatic complexity function -0.47 (54 findings)
+  3. DEAD009    Unused export                       -0.18 (48 findings)
 
-  Dead Code        8.4
-  Dependencies     7.1
-  Complexity       6.8
+── SCAN COVERAGE 1.7s · via git (respects .gitignore) ──────────────────────────
+  144 files found   93 analyzed as JS/TS   23 other files secret-scanned
+  Project: dependencies installed • tsconfig.json • Vitest • 42 entry points
+
+── CATEGORIES ──────────────────────────────────────────────────────────────────
+  Dead Code         8.9  ███████████████████████████░░░  ✔ clean
+  Dependencies     10.0  ██████████████████████████████  ✔ clean
+  Complexity        2.9  █████████░░░░░░░░░░░░░░░░░░░░░  114 findings
+  Type Safety       9.0  ███████████████████████████░░░  23 findings
+  Security          9.6  █████████████████████████████░  1 finding
+  Architecture      n/a  not scored — add "architecture.layers" to .devkitrc.json
+  ...
+
+── FINDINGS 138 total ──────────────────────────────────────────────────────────
+  ● 35 high   ● 80 medium   ● 23 low
+
+── HOTSPOTS files that cost the most points ────────────────────────────────────
+  ● src/moduleGraph.ts         23 findings  worst: high
+  ...
+
+── TOP ISSUES worst finding per category ───────────────────────────────────────
+  [HIGH]  High cyclomatic complexity function  Complexity · COMPLEX001
+  ┃ Function "runKnip" has cyclomatic complexity 21 (max 10).
+  ┃ → Split the function into smaller units or reduce branching.
+  ┃ src/adapters.ts:107
+      106 │ /** knip's JSON reporter (v5): unused files, exports, types and ...
+    > 107 │ function runKnip(root: string, options: AdapterOptions): { findings: ...
+          │ ^
   ...
 ```
 
@@ -339,7 +370,7 @@ Limits: it is function-level, not whole-program. A validator is trusted by name 
 
 ## Output formats
 
-- **Terminal** (default) — live progress on stderr, then a score with letter grade, scan coverage (files found, analyzed, secret-scanned, skipped, duration), per-category score bars, severity distribution, file hotspots, and code frames for the worst finding per category. Respects `NO_COLOR`/`FORCE_COLOR`; set `DEVKIT_ASCII=1` for plain-ASCII glyphs.
+- **Terminal** (default) — live progress on stderr, then a boxed header, the score with letter grade and a progress bar, the three biggest score drains, and sectioned panels: scan coverage (files found, analyzed, secret-scanned, skipped, duration, detected project setup), per-category score bars, severity distribution, file hotspots, a code frame for the worst finding per category, and suggested next steps (hidden-finding counts and follow-up commands). Respects `NO_COLOR`/`FORCE_COLOR`; set `DEVKIT_ASCII=1` for plain-ASCII glyphs.
 - **JSON** (`--json` / `--format json`) — the full `ScanSummary` object: score, category scores, every finding, repository metrics.
 - **Markdown** (`--format markdown` / `devkit report`) — category table, biggest score drains, and a flat findings list, suitable for pasting into a PR description.
 - **SARIF** (`--format sarif`) — standard SARIF 2.1.0, for GitHub code scanning and similar tools.
