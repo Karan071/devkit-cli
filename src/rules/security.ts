@@ -4,15 +4,15 @@ import type { RuleContext } from '../context';
 import type { Finding } from '../types';
 import { buildFinding } from '../finding';
 import { isRuleEnabled } from '../config';
-import { isTestFile, readFileSafe } from '../discovery';
-import { classifyFile } from '../fileKind';
+import { readFileSafe } from '../discovery';
 import { lineAndColumn } from '../ast/walk';
-import { SECRET_PATTERNS, isPublicOrDemoJwt, looksHighEntropy, looksLikeNonSecretValue } from './secretPatterns';
+import { runSecretScan } from './secrets';
 
-const SECRET_PATTERN = /\b(API_KEY|SECRET|TOKEN|PASSWORD|PRIVATE_KEY)\b\s*[:=]\s*["'`]([^"'`]{4,})["'`]/i;
 const WEAK_HASH_ALGORITHMS = /^(md5|sha1|des|rc4)$/i;
 const EXEC_FUNCTION_NAMES = new Set(['exec', 'execSync']);
 const SHELL_FUNCTION_NAMES = new Set(['spawn', 'spawnSync', 'execFile', 'execFileSync']);
+// Methods that run a SQL string: driver and query-builder calls, and the ORM escape hatches that skip parameterization.
+const SQL_FUNCTION_NAMES = new Set(['query', 'execute', 'raw', '$queryRawUnsafe', '$executeRawUnsafe', 'queryRawUnsafe', 'executeRawUnsafe']);
 const FILE_FUNCTION_NAMES = new Set(['readFile', 'readFileSync', 'writeFile', 'writeFileSync', 'appendFile', 'appendFileSync', 'createReadStream', 'createWriteStream', 'unlink', 'unlinkSync', 'open', 'openSync', 'stat', 'statSync', 'access', 'accessSync']);
 
 function calleeName(expression: ts.Expression): string | null {
@@ -125,11 +125,15 @@ function hasShellEnabled(node: ts.CallExpression): boolean {
     ));
 }
 
-function isDynamicCommandArgument(node: ts.CallExpression): boolean {
+/**
+ * The dynamically built string passed as the call's first argument: the argument itself when it is a
+ * template or concatenation, or the initializer of the nearest preceding `const q = ...` it names.
+ */
+function dynamicFirstArgument(node: ts.CallExpression): ts.Expression | undefined {
     const first = node.arguments[0];
-    if (!first) return false;
-    if (isDynamicString(first)) return true;
-    if (!ts.isIdentifier(first)) return false;
+    if (!first) return undefined;
+    if (isDynamicString(first)) return first;
+    if (!ts.isIdentifier(first)) return undefined;
     const enclosingFunction = nearestFunction(node);
     let nearestDeclaration: ts.VariableDeclaration | undefined;
     const sourceFile = node.getSourceFile();
@@ -142,7 +146,41 @@ function isDynamicCommandArgument(node: ts.CallExpression): boolean {
         ts.forEachChild(current, visit);
     };
     visit(enclosingFunction ?? sourceFile);
-    return !!nearestDeclaration?.initializer && isDynamicString(nearestDeclaration.initializer);
+    return nearestDeclaration?.initializer && isDynamicString(nearestDeclaration.initializer) ? nearestDeclaration.initializer : undefined;
+}
+
+function isDynamicCommandArgument(node: ts.CallExpression): boolean {
+    return dynamicFirstArgument(node) !== undefined;
+}
+
+/** `{ rejectUnauthorized: false }`-style options and a `checkServerIdentity` that accepts every certificate. */
+const TLS_OFF_OPTIONS: Record<string, ts.SyntaxKind> = {
+    rejectUnauthorized: ts.SyntaxKind.FalseKeyword,
+    strictSSL: ts.SyntaxKind.FalseKeyword,
+    insecure: ts.SyntaxKind.TrueKeyword
+};
+
+function isNoopFunction(expression: ts.Expression): boolean {
+    if (!ts.isArrowFunction(expression) && !ts.isFunctionExpression(expression)) return false;
+    const body = expression.body;
+    if (!ts.isBlock(body)) return ts.isIdentifier(body) ? body.text === 'undefined' : ts.isVoidExpression(body) || body.kind === ts.SyntaxKind.NullKeyword;
+    return body.statements.every((statement) => ts.isReturnStatement(statement) && (!statement.expression || statement.expression.getText() === 'undefined'));
+}
+
+/** The option that switches certificate verification off, if this node is one. */
+function tlsDisablingOption(node: ts.Node): string | undefined {
+    let name: string | undefined;
+    let value: ts.Expression | undefined;
+    if (ts.isPropertyAssignment(node)) {
+        name = ts.isIdentifier(node.name) || ts.isStringLiteral(node.name) ? node.name.text : undefined;
+        value = node.initializer;
+    } else if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isPropertyAccessExpression(node.left)) {
+        name = node.left.name.text;
+        value = node.right;
+    }
+    if (!name || !value) return undefined;
+    if (name in TLS_OFF_OPTIONS) return value.kind === TLS_OFF_OPTIONS[name] ? name : undefined;
+    return name === 'checkServerIdentity' && isNoopFunction(value) ? name : undefined;
 }
 
 function containsUntrustedInput(expression: ts.Expression): boolean {
@@ -151,85 +189,6 @@ function containsUntrustedInput(expression: ts.Expression): boolean {
 
 function hasPathSanitizer(node: ts.Node): boolean {
     return /(?:normalize|sanitize|safePath|allowedPaths|allowlist)\s*\(/i.test(node.getText());
-}
-
-// Unquoted `key: value` / `KEY=value` assignments as found in .env, YAML, TOML, INI and properties files.
-const CONFIG_SECRET_PATTERN = /\b([A-Za-z0-9_.-]*(?:api[_-]?key|secret|token|passw(?:or)?d|private[_-]?key|access[_-]?key|client[_-]?secret|auth)[A-Za-z0-9_.-]*)\b["']?\s*[:=]\s*["']?([^\s"',;}]{8,})/i;
-const PLACEHOLDER_VALUE = /example|sample|dummy|placeholder|changeme|your[_-]|xxxx|<[^>]*>|\$\{|\{\{|process\.env|^\*+$/i;
-const DOCUMENTATION_FILE = /\.(?:md|mdx|markdown|rst|txt|adoc)$/i;
-// `.env.example`, `.env.local.sample`, `config.template.toml`: files whose whole purpose is to hold placeholders.
-const EXAMPLE_CONFIG_FILE = /(?:^|[./_-])(?:example|sample|template|dist)(?:[./_-]|$)/i;
-
-function runSecretScan(context: RuleContext): Finding[] {
-    if (!isRuleEnabled(context.config, 'SEC001')) return [];
-
-    const findings: Finding[] = [];
-    const sourceFiles = new Set(context.files);
-
-    for (const file of [...context.files, ...context.textFiles]) {
-        const text = readFileSafe(file);
-        const relativePath = path.relative(context.projectRoot, file).replace(/\\/g, '/');
-        const lines = text.split(/\r\n|\r|\n/);
-        // Sample data in tests, fixtures, benchmarks and examples (a JWT to parse, a PEM for a TLS test) is not a leaked credential.
-        const isTestFixture = isTestFile(relativePath) || /(?:^|\/)(?:fixtures?|__mocks__)(?:\/|$)/i.test(relativePath) ||
-            ['test', 'typeTest', 'fixture', 'benchmark', 'example'].includes(classifyFile(relativePath));
-        const isSource = sourceFiles.has(file);
-        const isDocumentation = DOCUMENTATION_FILE.test(relativePath) || EXAMPLE_CONFIG_FILE.test(path.basename(relativePath));
-
-        for (let i = 0; i < lines.length; i += 1) {
-            const providerPattern = SECRET_PATTERNS.find((pattern) => pattern.regex.test(lines[i]));
-            let fallbackMatch: RegExpMatchArray | null = null;
-            if (!providerPattern && !isTestFixture && !isDocumentation) {
-                const candidate = lines[i].match(isSource ? SECRET_PATTERN : CONFIG_SECRET_PATTERN);
-                if (candidate && !PLACEHOLDER_VALUE.test(candidate[2]) && !looksLikeNonSecretValue(candidate[2])) fallbackMatch = candidate;
-            }
-            if (providerPattern || (fallbackMatch && looksHighEntropy(fallbackMatch[2], isSource ? 20 : 16))) {
-                // Fixtures and docs legitimately carry example credentials; keep them visible but discounted.
-                const matchedText = providerPattern ? (lines[i].match(providerPattern.regex)?.[0] ?? '') : '';
-                const publicByDesign = providerPattern?.id === 'jwt' && isPublicOrDemoJwt(matchedText);
-                const discounted = isTestFixture || isDocumentation || publicByDesign || /EXAMPLE/.test(lines[i]);
-                findings.push(
-                    buildFinding({
-                        ruleId: 'SEC001',
-                        category: 'security',
-                        severity: 'HIGH',
-                        confidence: discounted ? 'LOW' : providerPattern ? 'HIGH' : 'MEDIUM',
-                        file: relativePath,
-                        line: i + 1,
-                        column: providerPattern ? lines[i].search(providerPattern.regex) + 1 : lines[i].indexOf(fallbackMatch![0]) + 1,
-                        message: providerPattern ? `Potential ${providerPattern.label}` : 'Potential secret in source',
-                        description: providerPattern
-                            ? `A value matches the known format for a ${providerPattern.label}.`
-                            : 'A high-entropy value is assigned to a credential-like variable name.',
-                        evidence: providerPattern ? `${providerPattern.label} pattern matched` : `${fallbackMatch![1]}=[redacted]`,
-                        suggestion: 'Move sensitive values to environment variables or secure secret storage.',
-                        fixAvailable: false
-                    })
-                );
-            }
-
-            if (/NODE_TLS_REJECT_UNAUTHORIZED['"]?\s*[:=]\s*['"]?0/.test(lines[i])) {
-                findings.push(
-                    buildFinding({
-                        ruleId: 'SEC007',
-                        category: 'security',
-                        severity: 'HIGH',
-                        confidence: 'HIGH',
-                        file: relativePath,
-                        line: i + 1,
-                        column: 1,
-                        message: 'TLS certificate verification disabled',
-                        description: 'NODE_TLS_REJECT_UNAUTHORIZED is set to 0, disabling TLS verification process-wide.',
-                        evidence: lines[i].trim(),
-                        suggestion: 'Remove the override and fix the underlying certificate problem.',
-                        fixAvailable: false
-                    })
-                );
-            }
-        }
-    }
-
-    return findings;
 }
 
 function runAstSecurityChecks(context: RuleContext): Finding[] {
@@ -316,9 +275,10 @@ function runAstSecurityChecks(context: RuleContext): Finding[] {
                     }));
                 }
 
-                if (isRuleEnabled(context.config, 'SEC008') && name && ['query', 'execute'].includes(name) && node.arguments[0] && isDynamicString(node.arguments[0])) {
-                    const queryText = node.arguments[0].getText();
-                    if (/\b(select|insert|update|delete|replace|with)\b/i.test(queryText)) {
+                if (isRuleEnabled(context.config, 'SEC008') && name && SQL_FUNCTION_NAMES.has(name)) {
+                    // Either the query is built inline, or it was built into a variable that is passed in.
+                    const queryExpression = dynamicFirstArgument(node);
+                    if (queryExpression && /\b(select|insert|update|delete|replace|with)\b/i.test(queryExpression.getText())) {
                         const { line, column } = lineAndColumn(sourceFile, node.getStart());
                         findings.push(buildFinding({
                             ruleId: 'SEC008', category: 'security', severity: 'HIGH', confidence: 'MEDIUM', file: relativePath, line, column,
@@ -383,6 +343,18 @@ function runAstSecurityChecks(context: RuleContext): Finding[] {
                         );
                     }
                 }
+            }
+
+            const tlsOption = isRuleEnabled(context.config, 'SEC007') ? tlsDisablingOption(node) : undefined;
+            if (tlsOption) {
+                const { line, column } = lineAndColumn(sourceFile, node.getStart());
+                findings.push(buildFinding({
+                    ruleId: 'SEC007', category: 'security', severity: 'HIGH', confidence: tlsOption === 'insecure' ? 'MEDIUM' : 'HIGH', file: relativePath, line, column,
+                    message: 'TLS certificate verification disabled',
+                    description: `${tlsOption} turns off certificate verification, so a man-in-the-middle can impersonate the server.`,
+                    evidence: node.getText().slice(0, 160),
+                    suggestion: 'Remove the option and fix the underlying certificate problem (trust the CA instead of skipping verification).', fixAvailable: false
+                }));
             }
 
             if (isRuleEnabled(context.config, 'SEC004')) {

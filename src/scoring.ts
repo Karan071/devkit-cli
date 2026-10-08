@@ -19,7 +19,8 @@ const SEVERITY_WEIGHT: Record<Severity, number> = {
     HIGH: 2.5,
     MEDIUM: 1.5,
     LOW: 0.8,
-    INFO: 0.2
+    // Informational findings are shown but never cost points.
+    INFO: 0
 };
 
 const CONFIDENCE_WEIGHT: Record<Confidence, number> = {

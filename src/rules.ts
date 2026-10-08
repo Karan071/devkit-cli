@@ -379,7 +379,7 @@ export const rules: RuleDefinition[] = [
         severity: 'HIGH',
         confidence: 'HIGH',
         description: 'Potential secret material appears directly in source code.',
-        explanation: 'Recognizes common provider token formats and high-entropy values assigned to credential-like variable names.',
+        explanation: 'Recognizes provider token formats (AWS, GitHub with checksum validation, Stripe, Google, OpenAI, Anthropic, GitLab, npm, SendGrid, Twilio, Azure, database URLs) and strong values in string literals assigned to credential-like names. Only values are judged: comments, keys, dependency and author metadata are ignored. Public-by-design keys and sample credentials in tests and docs are INFO and cost no points.',
         example: 'const apiKey = "sk_live_123"',
         why: 'Secrets in code create immediate security and operational risk.',
         fixClassification: 'manual'
@@ -438,8 +438,8 @@ export const rules: RuleDefinition[] = [
         category: 'security',
         severity: 'HIGH',
         confidence: 'HIGH',
-        description: 'NODE_TLS_REJECT_UNAUTHORIZED is set to 0.',
-        explanation: 'Detected via text scanning for the environment variable assignment.',
+        description: 'Certificate verification is switched off: NODE_TLS_REJECT_UNAUTHORIZED=0, rejectUnauthorized: false, strictSSL: false, insecure: true, or a no-op checkServerIdentity.',
+        explanation: 'The environment variable is found by text scan; the options are found in the syntax tree.',
         example: 'process.env.NODE_TLS' + '_REJECT_UNAUTHORIZED = "0"',
         why: 'Disabling TLS verification exposes the process to man-in-the-middle attacks.',
         fixClassification: 'manual'
@@ -451,7 +451,7 @@ export const rules: RuleDefinition[] = [
         severity: 'HIGH',
         confidence: 'MEDIUM',
         description: 'A SQL query string is dynamically constructed.',
-        explanation: 'Concatenating input into query syntax can allow an attacker to alter the query.',
+        explanation: 'Concatenating input into query syntax can allow an attacker to alter the query. Checked on query/execute/raw and the Prisma $queryRawUnsafe/$executeRawUnsafe calls, including a query built into a variable first.',
         example: 'db.query(`SELECT * FROM users WHERE id = ${id}`);',
         why: 'Parameterized queries keep data separate from executable SQL.',
         fixClassification: 'manual'
