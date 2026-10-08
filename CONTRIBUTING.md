@@ -48,6 +48,16 @@ npm run bench:check    # the CI gate
 
 If you fix a false positive or close a detection gap, add a planted issue or decoy to `bench/seeded/` and update `bench/baseline.json` (`npm run bench -- --update-baseline`) in the same PR.
 
+## Releasing
+
+Before tagging a release, regenerate the published accuracy table and the measured accuracy that drives the default output:
+
+```bash
+npm run bench:corpus      # clone and scan the pinned corpus (about 4 minutes)
+npm run bench:report      # writes bench/ACCURACY.md and src/ruleQuality.ts
+git add bench/ACCURACY.md src/ruleQuality.ts
+```
+
 ## Submitting a change
 
 1. Fork the repo and create a branch from `main`.

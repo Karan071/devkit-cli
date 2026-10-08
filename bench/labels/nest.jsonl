@@ -1,0 +1,3 @@
+{"repo": "nest", "rule": "DEP001", "file": "package.json", "line": 73, "verdict": true, "reason": "real issue"}
+{"repo": "nest", "rule": "DEP001", "file": "package.json", "line": 69, "verdict": true, "reason": "real issue"}
+{"repo": "nest", "rule": "DEP001", "file": "package.json", "line": 130, "verdict": true, "reason": "real issue"}

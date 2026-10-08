@@ -1,0 +1,31 @@
+{"repo": "juice-shop", "rule": "SEC001", "file": "data/static/users.yml", "line": 63, "verdict": true, "reason": "hardcoded demo account password or TOTP secret committed in a data file"}
+{"repo": "juice-shop", "rule": "SEC001", "file": "data/static/users.yml", "line": 88, "verdict": true, "reason": "hardcoded demo account password or TOTP secret committed in a data file"}
+{"repo": "juice-shop", "rule": "SEC001", "file": "data/static/users.yml", "line": 107, "verdict": true, "reason": "hardcoded demo account password or TOTP secret committed in a data file"}
+{"repo": "juice-shop", "rule": "SEC001", "file": "data/static/users.yml", "line": 115, "verdict": true, "reason": "hardcoded demo account password or TOTP secret committed in a data file"}
+{"repo": "juice-shop", "rule": "SEC001", "file": "data/static/users.yml", "line": 123, "verdict": true, "reason": "hardcoded demo account password or TOTP secret committed in a data file"}
+{"repo": "juice-shop", "rule": "SEC001", "file": "data/static/users.yml", "line": 150, "verdict": true, "reason": "hardcoded demo account password or TOTP secret committed in a data file"}
+{"repo": "juice-shop", "rule": "SEC001", "file": "data/static/users.yml", "line": 151, "verdict": true, "reason": "hardcoded demo account password or TOTP secret committed in a data file"}
+{"repo": "juice-shop", "rule": "SEC001", "file": "data/static/users.yml", "line": 239, "verdict": true, "reason": "hardcoded demo account password or TOTP secret committed in a data file"}
+{"repo": "juice-shop", "rule": "SEC001", "file": "data/static/users.yml", "line": 245, "verdict": true, "reason": "hardcoded demo account password or TOTP secret committed in a data file"}
+{"repo": "juice-shop", "rule": "SEC001", "file": "data/static/users.yml", "line": 277, "verdict": true, "reason": "hardcoded demo account password or TOTP secret committed in a data file"}
+{"repo": "juice-shop", "rule": "SEC001", "file": "lib/insecurity.ts", "line": 21, "verdict": true, "reason": "hardcoded RSA private key used to sign tokens"}
+{"repo": "juice-shop", "rule": "SEC001", "file": "infrastructure/terraform/networking.tf", "line": 171, "verdict": true, "reason": "private key committed in terraform"}
+{"repo": "juice-shop", "rule": "SEC001", "file": "terraform/networking.tf", "line": 171, "verdict": true, "reason": "private key committed in terraform"}
+{"repo": "juice-shop", "rule": "SEC002", "file": "routes/userProfile.ts", "line": 65, "verdict": true, "reason": "eval of text derived from a user-controlled username"}
+{"repo": "juice-shop", "rule": "SEC002", "file": "routes/captcha.ts", "line": 22, "verdict": true, "reason": "eval is used; the expression is generated server-side so exploitability is low"}
+{"repo": "juice-shop", "rule": "SEC005", "file": "lib/insecurity.ts", "line": 41, "verdict": true, "reason": "md5 used to hash passwords"}
+{"repo": "juice-shop", "rule": "SEC005", "file": "scripts/package.mjs", "line": 121, "verdict": false, "reason": "md5 used for a release archive checksum, not a security boundary"}
+{"repo": "juice-shop", "rule": "SEC008", "file": "routes/login.ts", "line": 34, "verdict": true, "reason": "request data interpolated into a SQL string"}
+{"repo": "juice-shop", "rule": "SEC008", "file": "routes/search.ts", "line": 23, "verdict": true, "reason": "request data interpolated into a SQL string"}
+{"repo": "juice-shop", "rule": "SEC009", "file": "routes/vulnCodeSnippet.ts", "line": 89, "verdict": false, "reason": "key is validated by an earlier lookup that returns 404 for unknown keys"}
+{"repo": "juice-shop", "rule": "SEC009", "file": "routes/vulnCodeSnippet.ts", "line": 90, "verdict": false, "reason": "key is validated by an earlier lookup that returns 404 for unknown keys"}
+{"repo": "juice-shop", "rule": "SEC010", "file": "lib/scripts/lintConfig.ts", "line": 22, "verdict": true, "reason": "js-yaml ^3 load() uses the unsafe default schema"}
+{"repo": "juice-shop", "rule": "SEC010", "file": "routes/vulnCodeFixes.ts", "line": 81, "verdict": true, "reason": "js-yaml ^3 load() uses the unsafe default schema"}
+{"repo": "juice-shop", "rule": "SEC010", "file": "routes/vulnCodeSnippet.ts", "line": 90, "verdict": true, "reason": "js-yaml ^3 load() uses the unsafe default schema"}
+{"repo": "juice-shop", "rule": "SEC010", "file": "rsn/rsnUtil.ts", "line": 135, "verdict": true, "reason": "js-yaml ^3 load() uses the unsafe default schema"}
+{"repo": "juice-shop", "rule": "SEC010", "file": "server.ts", "line": 139, "verdict": true, "reason": "js-yaml ^3 load() uses the unsafe default schema"}
+{"repo": "juice-shop", "rule": "SEC011", "file": "routes/vulnCodeFixes.ts", "line": 92, "verdict": false, "reason": "key is validated by an earlier lookup before it indexes the store"}
+{"repo": "juice-shop", "rule": "SEC011", "file": "routes/vulnCodeSnippet.ts", "line": 110, "verdict": false, "reason": "key is validated by an earlier lookup before it indexes the store"}
+{"repo": "juice-shop", "rule": "SEC013", "file": "routes/profileImageUrlUpload.ts", "line": 24, "verdict": true, "reason": "fetch() of a URL taken from the request body"}
+{"repo": "juice-shop", "rule": "DEAD009", "file": "data/types.ts", "line": 34, "verdict": true, "reason": "real issue"}
+{"repo": "juice-shop", "rule": "DEAD009", "file": "frontend/src/hacking-instructor/helpers/helpers.ts", "line": 229, "verdict": true, "reason": "real issue"}

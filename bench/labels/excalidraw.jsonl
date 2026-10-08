@@ -1,0 +1,9 @@
+{"repo": "excalidraw", "rule": "DEAD009", "file": "packages/excalidraw/components/icons.tsx", "line": 2519, "verdict": true, "reason": "real issue"}
+{"repo": "excalidraw", "rule": "DEAD009", "file": "packages/excalidraw/renderer/renderNewElementScene.ts", "line": 95, "verdict": true, "reason": "real issue"}
+{"repo": "excalidraw", "rule": "DEAD009", "file": "packages/excalidraw/actions/colorTargets.ts", "line": 37, "verdict": true, "reason": "real issue"}
+{"repo": "excalidraw", "rule": "DEAD009", "file": "packages/excalidraw/components/App.toolDrag.ts", "line": 49, "verdict": true, "reason": "real issue"}
+{"repo": "excalidraw", "rule": "DEAD009", "file": "packages/excalidraw/actions/index.ts", "line": 26, "verdict": true, "reason": "real issue"}
+{"repo": "excalidraw", "rule": "DEAD009", "file": "packages/excalidraw/components/IconButton.tsx", "line": 16, "verdict": true, "reason": "real issue"}
+{"repo": "excalidraw", "rule": "DEAD010", "file": "packages/excalidraw/components/ButtonIconCycle.tsx", "line": 1, "verdict": true, "reason": "component nothing references"}
+{"repo": "excalidraw", "rule": "DEAD010", "file": "dev-docs/src/components/Homepage/index.tsx", "line": 1, "verdict": true, "reason": "shadowed by index.js, which webpack resolves first"}
+{"repo": "excalidraw", "rule": "DEAD010", "file": "packages/excalidraw/index-node.ts", "line": 1, "verdict": false, "reason": "entry of scripts/build-node.js"}

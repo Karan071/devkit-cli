@@ -8,6 +8,26 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **Found by validating on real repositories** (zod, hono, trpc, excalidraw,
+  nest, date-fns and OWASP Juice Shop):
+  - Vendored code (`vendor/`, `third_party/`, scripts under `assets/`) is not
+    judged as the project's own code or scored.
+  - A directory named as the start of a path built at runtime inside a
+    filesystem call (`readFile('./data/snippets/' + key + '.ts')`) is treated
+    as referenced, so its files are not reported as unused.
+  - Docusaurus `@site/...` imports resolve to the site package.
+  - **DEP001** counts packages referenced by a `node_modules/<pkg>` path (Angular
+    styles, copy scripts), imported at the top of an MDX document, or implied by
+    file types (`sass` with `.scss`, `less`, `stylus`); `tslib` is implied by
+    Angular; a scoped plugin (`@size-limit/file`) is used when its tool is.
+  - **SEC001** no longer treats a sentence used as a JSON key, non-ASCII prose,
+    or a hyphenated translated label as a credential, and ignores the
+    search-only key of an Algolia DocSearch config.
+- The benchmark gains `bench:report` and a generated
+  [bench/ACCURACY.md](bench/ACCURACY.md) (B6), 56 hand-assigned labels for 11
+  rules, and a separate baseline for corpus runs (`baseline.corpus.json`); CI
+  still gates on the seeded repo only.
+
 - **Output you can trust** (#8: O1-O6).
   - The default output lists only HIGH/CERTAIN-confidence findings from rules
     that measured at least 85% accuracy (security findings at MEDIUM

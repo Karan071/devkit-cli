@@ -1,0 +1,8 @@
+{"repo": "trpc", "rule": "DEAD009", "file": "packages/openapi/src/schemaExtraction.ts", "line": 19, "verdict": true, "reason": "no other file imports this export or mentions the name"}
+{"repo": "trpc", "rule": "DEAD009", "file": "packages/tanstack-react-query/src/internals/subscriptionOptions.ts", "line": 77, "verdict": true, "reason": "real issue"}
+{"repo": "trpc", "rule": "DEAD009", "file": "www/src/components/ArticleCard.tsx", "line": 15, "verdict": true, "reason": "real issue"}
+{"repo": "trpc", "rule": "DEAD009", "file": "packages/react-query/src/createTRPCReact.tsx", "line": 267, "verdict": true, "reason": "real issue"}
+{"repo": "trpc", "rule": "DEAD009", "file": "www/src/components/sponsors/script.types.ts", "line": 29, "verdict": true, "reason": "real issue"}
+{"repo": "trpc", "rule": "DEP001", "file": "package.json", "line": 54, "verdict": true, "reason": "real issue"}
+{"repo": "trpc", "rule": "DEAD010", "file": "www/src/components/ArticleCard.tsx", "line": 1, "verdict": true, "reason": "component nothing references"}
+{"repo": "trpc", "rule": "DEAD010", "file": "www/src/components/TwitterWall/tweetsOld.ts", "line": 1, "verdict": true, "reason": "file nothing references"}
