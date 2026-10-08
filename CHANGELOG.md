@@ -97,6 +97,26 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Adoption features** (#8: A1-A5).
+  - `devkit scan --since <ref>` lists only findings on lines changed since a
+    git ref (new files count in full). The score still covers the whole
+    repository (A1).
+  - `devkit fix --write` applies safe fixes: unused imports (exactly the
+    bindings the compiler reports), `console.log`/`console.debug`/`debugger`
+    statements, and provably safe `var` to `const`/`let`. Each file is
+    re-checked and left alone if a fix would add a compile error. Without
+    `--write` it previews the same plan (A2).
+  - `devkit doctor` reports installed dependencies, the active tsconfig,
+    workspaces, frameworks, entry points and unresolved imports; the same facts
+    appear as a "Project" line in the scan header and in `environment` in JSON
+    (A3).
+  - `devkit init --interactive` proposes ignores from detected frameworks
+    (build output) and the directories with the most findings, and writes
+    `.devkitrc.json` without discarding existing settings (A4).
+  - `devkit scan --with gitleaks,knip` merges those tools' findings into the
+    score and SARIF output when they are installed. SARIF results now carry a
+    `partialFingerprints` entry built from the stable finding id (A5).
+
 - Secret formats: Google, OpenAI, Anthropic, GitLab, npm, SendGrid, Twilio and
   Azure storage keys, Stripe publishable keys (INFO) and database URLs with an
   embedded password (G3).

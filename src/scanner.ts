@@ -23,6 +23,8 @@ import { isSuppressed } from './suppressions';
 import { disambiguateFingerprints } from './finding';
 import { classifyFile, ruleAppliesTo } from './fileKind';
 import { TYPE_AWARE_RULES, assessTypeAwareness } from './typeAwareness';
+import { describeEnvironment } from './environment';
+import { runAdapters, type AdapterName, type AdapterOptions } from './adapters';
 import type { Finding, RepoMetrics, ScanCoverage, ScanSummary } from './types';
 
 export interface ScanProgress {
@@ -102,6 +104,9 @@ const TOTAL_STEPS = 5 + RULE_PHASES.length + 1;
 export interface ScanOptions {
     /** Report findings in tests, examples, benchmarks and fixtures too (overrides `scan.includeNonProduction`). */
     includeNonProduction?: boolean;
+    /** External tools whose findings are merged into the report (and so into the score and SARIF output). */
+    adapters?: AdapterName[];
+    adapterOptions?: AdapterOptions;
 }
 
 export function scanRepository(projectRoot: string, onProgress: ProgressListener = () => undefined, options: ScanOptions = {}): ScanSummary {
@@ -166,6 +171,11 @@ export function scanRepository(projectRoot: string, onProgress: ProgressListener
 
     nextPhase('Scoring');
     const warnings: string[] = [];
+    if (options.adapters && options.adapters.length > 0) {
+        const external = runAdapters(projectRoot, options.adapters, allFindings, options.adapterOptions);
+        allFindings.push(...external.findings);
+        warnings.push(...external.notes);
+    }
     const typeAwareness = assessTypeAwareness(projectRoot, packageJson, program, files);
     if (typeAwareness.degraded && typeAwareness.reason) {
         warnings.push(typeAwareness.reason);
@@ -281,6 +291,7 @@ export function scanRepository(projectRoot: string, onProgress: ProgressListener
         securityCapped,
         findings,
         scoreDrains: drains.slice(0, 3),
+        environment: describeEnvironment(projectRoot, packageJson, files, moduleGraph.entryPoints.size, typeAwareness.unresolved),
         metrics,
         generatedFiles,
         coverage

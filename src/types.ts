@@ -55,6 +55,23 @@ export interface RepoMetrics {
     testToSourceRatio: number;
 }
 
+/** What the scan found about the project it ran on: the facts that decide how far its findings can be trusted. */
+export interface Environment {
+    dependenciesInstalled: boolean;
+    packageManager: string | null;
+    /** Root tsconfig.json, when there is one. */
+    tsconfig: string | null;
+    /** Directories with their own tsconfig.json besides the root. */
+    nestedTsconfigs: number;
+    /** package.json files found, including the root. */
+    packages: number;
+    workspaceGlobs: string[];
+    frameworks: string[];
+    entryPoints: number;
+    unresolvedImports: number;
+    unresolvedSample: string[];
+}
+
 /** A rule's cost to the overall score. */
 export interface ScoreDrain {
     ruleId: string;
@@ -75,6 +92,7 @@ export interface ScanSummary {
     scoreDrains?: ScoreDrain[];
     /** Findings left out of the output by the default trust filter (see `--all`). */
     hiddenByDefault?: number;
+    environment?: Environment;
     metrics: RepoMetrics;
     generatedFiles: string[];
     coverage?: ScanCoverage;

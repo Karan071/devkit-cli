@@ -11,6 +11,10 @@ const UNRESOLVED_SHARE = 0.5;
 
 export interface TypeAwareness {
     degraded: boolean;
+    /** Package specifiers the compiler could not resolve (sorted), whether or not that degrades type-based findings. */
+    unresolved: string[];
+    /** Distinct package specifiers imported by the analyzed files. */
+    importedPackages: number;
     /** One-line explanation for the scan banner. */
     reason?: string;
 }
@@ -25,34 +29,31 @@ function declaresDependencies(packageJson: Record<string, unknown> | null): bool
  * them are reported with low confidence instead of as fact.
  */
 export function assessTypeAwareness(projectRoot: string, packageJson: Record<string, unknown> | null, program: ts.Program, files: string[]): TypeAwareness {
-    if (!fs.existsSync(path.join(projectRoot, 'node_modules')) && declaresDependencies(packageJson)) {
-        return { degraded: true, reason: 'Dependencies are not installed (no node_modules), so imported types are unknown. Type-based findings (TS001, ERR003) are reported at low confidence. Run your package manager\'s install for accurate results.' };
-    }
-
-    const unresolved = new Set<string>();
+    const unresolvedSet = new Set<string>();
+    const imported = new Set<string>();
     for (const file of files) {
         const sourceFile = program.getSourceFile(file);
         if (!sourceFile) continue;
         for (const diagnostic of program.getSemanticDiagnostics(sourceFile)) {
             if (diagnostic.code !== UNRESOLVED_MODULE) continue;
             const specifier = ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n').match(/module '([^']+)'/)?.[1];
-            if (specifier && !specifier.startsWith('.') && !specifier.startsWith('/')) unresolved.add(specifier);
+            if (specifier && !specifier.startsWith('.') && !specifier.startsWith('/')) unresolvedSet.add(specifier);
         }
-    }
-
-    const imported = new Set<string>();
-    for (const file of files) {
-        const sourceFile = program.getSourceFile(file);
-        for (const statement of sourceFile?.statements ?? []) {
+        for (const statement of sourceFile.statements) {
             if ((ts.isImportDeclaration(statement) || ts.isExportDeclaration(statement)) && statement.moduleSpecifier && ts.isStringLiteral(statement.moduleSpecifier)) {
                 const specifier = statement.moduleSpecifier.text;
                 if (!specifier.startsWith('.') && !specifier.startsWith('/') && !specifier.startsWith('node:')) imported.add(specifier);
             }
         }
     }
+    const unresolved = [...unresolvedSet].sort();
+    const base = { unresolved, importedPackages: imported.size };
 
-    if (unresolved.size >= MIN_UNRESOLVED && unresolved.size / Math.max(imported.size, 1) >= UNRESOLVED_SHARE) {
-        return { degraded: true, reason: `${unresolved.size} of ${imported.size} imported packages could not be resolved, so their types are unknown. Type-based findings (TS001, ERR003) are reported at low confidence.` };
+    if (!fs.existsSync(path.join(projectRoot, 'node_modules')) && declaresDependencies(packageJson)) {
+        return { ...base, degraded: true, reason: 'Dependencies are not installed (no node_modules), so imported types are unknown. Type-based findings (TS001, ERR003) are reported at low confidence. Run your package manager\'s install for accurate results.' };
     }
-    return { degraded: false };
+    if (unresolved.length >= MIN_UNRESOLVED && unresolved.length / Math.max(imported.size, 1) >= UNRESOLVED_SHARE) {
+        return { ...base, degraded: true, reason: `${unresolved.length} of ${imported.size} imported packages could not be resolved, so their types are unknown. Type-based findings (TS001, ERR003) are reported at low confidence.` };
+    }
+    return { ...base, degraded: false };
 }

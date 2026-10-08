@@ -19,7 +19,7 @@ import {
     terminalWidth,
     truncateMiddle
 } from './terminal';
-import type { Confidence, Finding, ScanSummary, Severity } from './types';
+import type { Confidence, Environment, Finding, ScanSummary, Severity } from './types';
 
 const CATEGORY_LABELS: Record<string, string> = {
     deadCode: 'Dead Code',
@@ -52,6 +52,46 @@ function confidenceRank(confidence: Confidence): number {
 
 const MAX_DETAILED_FINDINGS = 6;
 const SEVERITIES = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO'] as const;
+
+const INSTALL_COMMAND: Record<string, string> = { pnpm: 'pnpm install', yarn: 'yarn install', npm: 'npm install', bun: 'bun install' };
+
+/** One line for the scan header: the project facts that decide how much to trust the findings. */
+function environmentLine(environment: Environment): string {
+    const parts = [
+        environment.dependenciesInstalled ? 'dependencies installed' : 'dependencies NOT installed',
+        environment.tsconfig ? `${environment.tsconfig}${environment.nestedTsconfigs > 0 ? ` +${environment.nestedTsconfigs} nested` : ''}` : 'no tsconfig.json',
+        plural(environment.packages, 'package'),
+        ...(environment.frameworks.length > 0 ? [environment.frameworks.slice(0, 4).join(', ')] : []),
+        `${plural(environment.entryPoints, 'entry point')}`,
+        `${environment.unresolvedImports} unresolved import${environment.unresolvedImports === 1 ? '' : 's'}`
+    ];
+    return parts.join(` ${glyph.bullet} `);
+}
+
+export function formatDoctor(summary: ScanSummary): string {
+    const environment = summary.environment;
+    const width = terminalWidth();
+    const lines: string[] = [...renderBox([`${color.bold(color.cyan('DevKit'))} ${color.dim(glyph.bullet)} ${color.bold('Project doctor')}`, color.dim(truncateMiddle(displayPath(summary.repository), width - 6))], width), ''];
+    if (!environment) return [...lines, '  No environment information was collected.', ''].join('\n');
+
+    const row = (label: string, status: string, detail = ''): void => { lines.push(`  ${color.dim(pad(label, 14))}${status}${detail ? `  ${color.dim(detail)}` : ''}`); };
+    const ok = (text: string) => color.green(`${glyph.check} ${text}`);
+    const warn = (text: string) => color.yellow(`${glyph.warn} ${text}`);
+    const install = INSTALL_COMMAND[environment.packageManager ?? 'npm'];
+
+    row('Dependencies', environment.dependenciesInstalled ? ok('installed') : warn('not installed'),
+        environment.dependenciesInstalled ? (environment.packageManager ?? '') : `run \`${install}\` first: type-based findings (TS001, ERR003) are unreliable without it`);
+    row('TypeScript', environment.tsconfig ? ok(environment.tsconfig) : warn('no root tsconfig.json'),
+        environment.tsconfig ? (environment.nestedTsconfigs > 0 ? `plus ${plural(environment.nestedTsconfigs, 'nested config')}` : '') : 'compiler defaults are assumed');
+    row('Packages', ok(String(environment.packages)), environment.workspaceGlobs.length > 0 ? `workspaces: ${environment.workspaceGlobs.join(', ')}` : environment.packages > 1 ? 'no workspace globs declared' : '');
+    row('Frameworks', environment.frameworks.length > 0 ? ok(environment.frameworks.join(', ')) : color.dim('none detected'));
+    row('Entry points', environment.entryPoints > 0 ? ok(String(environment.entryPoints)) : warn('none found'), environment.entryPoints > 0 ? '' : 'every file will look unused: set "main" or "exports" in package.json');
+    row('Imports', environment.unresolvedImports === 0 ? ok('all resolved') : warn(`${environment.unresolvedImports} unresolved`),
+        environment.unresolvedImports === 0 ? '' : `${environment.unresolvedSample.join(', ')}${environment.unresolvedImports > environment.unresolvedSample.length ? ', ...' : ''}`);
+    for (const warning of summary.coverage?.warnings ?? []) lines.push('', `  ${color.yellow(`${glyph.warn} ${warning}`)}`);
+    lines.push('');
+    return lines.join('\n');
+}
 
 function hiddenNote(count: number): string {
     return `${plural(count, 'lower-confidence finding')} hidden. Run with --all to list them (--audit also includes tests and examples).`;
@@ -115,6 +155,7 @@ function renderCoverage(summary: ScanSummary, width: number): string[] {
         .map(([extension, count]) => `${extension} ${color.dim(String(count))}`)
         .join(color.dim('  ·  '));
     if (languages) lines.push(`  ${color.dim('Files:')} ${languages}`);
+    if (summary.environment) lines.push(`  ${color.dim('Project:')} ${environmentLine(summary.environment)}`);
     for (const warning of coverage.warnings ?? []) lines.push(`  ${color.yellow(`${glyph.warn} ${warning}`)}`);
     return lines;
 }
@@ -256,6 +297,7 @@ export function formatMarkdown(summary: ScanSummary): string {
     if (summary.coverage) {
         const coverage = summary.coverage;
         lines.push(`- Coverage: ${coverage.discoveredFiles} files found, ${coverage.analyzedFiles} analyzed as JS/TS, ${coverage.textFilesScanned} other files secret-scanned, ${coverage.generatedFilesSkipped} generated skipped (${formatDuration(coverage.durationMs)})`);
+        if (summary.environment) lines.push(`- Project: ${environmentLine(summary.environment)}`);
         for (const warning of coverage.warnings ?? []) lines.push(`- **Warning:** ${warning}`);
     }
     lines.push('');
@@ -309,6 +351,8 @@ export function formatSarif(summary: ScanSummary): string {
         message: {
             text: finding.message
         },
+        // Stable across refactors (see finding ids), so code-scanning alerts are not closed and reopened by line shifts.
+        partialFingerprints: { 'devkit/v1': finding.id },
         locations: [
             {
                 physicalLocation: {
@@ -324,6 +368,13 @@ export function formatSarif(summary: ScanSummary): string {
         ]
     }));
 
+    const builtIn = new Set(listRules().map((rule) => rule.id));
+    const externalRules = [...new Set(summary.findings.map((finding) => finding.ruleId).filter((id) => !builtIn.has(id)))].map((id) => ({
+        id,
+        name: id,
+        shortDescription: { text: id.startsWith('GITLEAKS:') ? `gitleaks rule ${id.slice('GITLEAKS:'.length)}` : `knip ${id.slice('KNIP:'.length)}` },
+        properties: { category: summary.findings.find((finding) => finding.ruleId === id)?.category ?? 'external' }
+    }));
     const sarifRules = listRules().map((rule) => ({
         id: rule.id,
         name: rule.title,
@@ -346,7 +397,7 @@ export function formatSarif(summary: ScanSummary): string {
                     tool: {
                         driver: {
                             name: 'DevKit',
-                            rules: sarifRules
+                            rules: [...sarifRules, ...externalRules]
                         }
                     },
                     results
