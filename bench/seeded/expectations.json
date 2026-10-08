@@ -166,6 +166,41 @@
       "id": "loose-equality",
       "rule": "JS002",
       "file": "src/env.ts"
+    },
+    {
+      "id": "taint-command",
+      "rule": "SEC003",
+      "file": "src/routes.ts"
+    },
+    {
+      "id": "taint-ssrf",
+      "rule": "SEC013",
+      "file": "src/routes.ts"
+    },
+    {
+      "id": "taint-redirect",
+      "rule": "SEC012",
+      "file": "src/routes.ts"
+    },
+    {
+      "id": "taint-regexp",
+      "rule": "SEC014",
+      "file": "src/routes.ts"
+    },
+    {
+      "id": "taint-pollution",
+      "rule": "SEC011",
+      "file": "src/routes.ts"
+    },
+    {
+      "id": "taint-path",
+      "rule": "SEC009",
+      "file": "src/routes.ts"
+    },
+    {
+      "id": "taint-via-helper",
+      "rule": "SEC003",
+      "file": "src/routes.ts"
     }
   ],
   "decoys": [
@@ -255,6 +290,36 @@
       "rule": "SEC001",
       "file": "config/site.json",
       "line": "any"
+    },
+    {
+      "id": "taint-parsed-number",
+      "rule": "SEC003",
+      "file": "src/routes.ts"
+    },
+    {
+      "id": "taint-allowlist",
+      "rule": "SEC003",
+      "file": "src/routes.ts"
+    },
+    {
+      "id": "taint-basename",
+      "rule": "SEC009",
+      "file": "src/routes.ts"
+    },
+    {
+      "id": "taint-pinned-redirect",
+      "rule": "SEC012",
+      "file": "src/routes.ts"
+    },
+    {
+      "id": "taint-fixed-host",
+      "rule": "SEC013",
+      "file": "src/routes.ts"
+    },
+    {
+      "id": "taint-escaped-regexp",
+      "rule": "SEC014",
+      "file": "src/routes.ts"
     }
   ]
 }

@@ -9,6 +9,7 @@ import { runUntrusted } from './sandbox';
 import { isBrowser, readOptional, sameId, sameId } from './env';
 import { legacy, server, swallow } from './quality';
 import { cycleA } from './cycleA';
+import { registerRoutes } from './routes';
 import { anthropicKey, azureConnection, databaseUrl, gitlabToken, googleKey, npmToken, openaiKey, sendgridKey, twilioKey } from './keys';
 import { firebaseConfig } from './firebase';
 import { publishableKey, sampleToken } from './billing';
@@ -18,6 +19,7 @@ export function main(): void {
     void [anthropicKey, azureConnection, databaseUrl, gitlabToken, googleKey, npmToken, openaiKey, sendgridKey, twilioKey];
     void [firebaseConfig, publishableKey, sampleToken, passwordField, passwordHint, tokenLabel];
     void [findUserByKnex, findUserByPrisma, findUserBySequelize];
+    void registerRoutes;
     void [apiKey, dbPassword, awsAccessKey, stripeKey, githubToken];
     void [findUser, findUserByQuery, findUserSafely, listDirectory, hasVersion, evaluate, readUpload];
     void [renderGreeting, renderStatic, fingerprint, checksum, fetchInsecure, insecureAgent, disableTlsGlobally];

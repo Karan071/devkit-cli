@@ -38,7 +38,7 @@
     },
     "SEC003": {
       "accuracy": 100,
-      "labeled": 1
+      "labeled": 3
     },
     "SEC004": {
       "accuracy": 100,
@@ -58,9 +58,25 @@
     },
     "SEC009": {
       "accuracy": 100,
-      "labeled": 1
+      "labeled": 2
     },
     "SEC010": {
+      "accuracy": 100,
+      "labeled": 1
+    },
+    "SEC011": {
+      "accuracy": 100,
+      "labeled": 1
+    },
+    "SEC012": {
+      "accuracy": 100,
+      "labeled": 1
+    },
+    "SEC013": {
+      "accuracy": 100,
+      "labeled": 1
+    },
+    "SEC014": {
       "accuracy": 100,
       "labeled": 1
     }
