@@ -161,6 +161,11 @@
       "id": "sql-sequelize",
       "rule": "SEC008",
       "file": "src/db.ts"
+    },
+    {
+      "id": "loose-equality",
+      "rule": "JS002",
+      "file": "src/env.ts"
     }
   ],
   "decoys": [
@@ -202,8 +207,7 @@
     {
       "id": "typeof-loose-equality",
       "rule": "JS002",
-      "file": "src/env.ts",
-      "issue": "R2"
+      "file": "src/env.ts"
     },
     {
       "id": "null-loose-equality",

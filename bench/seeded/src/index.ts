@@ -6,7 +6,7 @@ import { renderGreeting, renderStatic } from './render';
 import { fingerprint, checksum } from './hash';
 import { disableTlsGlobally, fetchInsecure, insecureAgent } from './http';
 import { runUntrusted } from './sandbox';
-import { isBrowser, readOptional } from './env';
+import { isBrowser, readOptional, sameId, sameId } from './env';
 import { legacy, server, swallow } from './quality';
 import { cycleA } from './cycleA';
 import { anthropicKey, azureConnection, databaseUrl, gitlabToken, googleKey, npmToken, openaiKey, sendgridKey, twilioKey } from './keys';
@@ -21,5 +21,5 @@ export function main(): void {
     void [apiKey, dbPassword, awsAccessKey, stripeKey, githubToken];
     void [findUser, findUserByQuery, findUserSafely, listDirectory, hasVersion, evaluate, readUpload];
     void [renderGreeting, renderStatic, fingerprint, checksum, fetchInsecure, insecureAgent, disableTlsGlobally];
-    void [runUntrusted, isBrowser, readOptional, cycleA, legacy, server, swallow];
+    void [runUntrusted, isBrowser, readOptional, sameId, cycleA, legacy, server, swallow];
 }
