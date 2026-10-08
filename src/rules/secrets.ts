@@ -111,6 +111,13 @@ function propertyKey(name: ts.PropertyName | ts.Expression): string | undefined 
     return ts.isIdentifier(name) || ts.isStringLiteralLike(name) ? name.text : undefined;
 }
 
+// Algolia DocSearch configs (`{ appId, apiKey, indexName }`) carry a search-only key that is meant to be published.
+const PUBLIC_SEARCH_SIBLINGS = new Set(['appId', 'indexName']);
+
+function isPublicSearchKey(node: ts.PropertyAssignment): boolean {
+    return ts.isObjectLiteralExpression(node.parent) && node.parent.properties.some((sibling) => ts.isPropertyAssignment(sibling) && ts.isIdentifier(sibling.name) && PUBLIC_SEARCH_SIBLINGS.has(sibling.name.text));
+}
+
 /** String literals assigned to credential-like names in TS/JS, found in the syntax tree so comments and prose never match. */
 function scanSourceAssignments(file: FileContext, sourceFile: ts.SourceFile, skipLines: Set<number>): Finding[] {
     const findings: Finding[] = [];
@@ -124,6 +131,7 @@ function scanSourceAssignments(file: FileContext, sourceFile: ts.SourceFile, ski
         } else if (ts.isPropertyAssignment(node) || ts.isPropertyDeclaration(node)) {
             name = propertyKey(node.name);
             value = node.initializer;
+            if (name === 'apiKey' && ts.isPropertyAssignment(node) && isPublicSearchKey(node)) name = undefined;
         } else if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
             name = ts.isIdentifier(node.left) ? node.left.text : ts.isPropertyAccessExpression(node.left) ? node.left.name.text : undefined;
             value = node.right;

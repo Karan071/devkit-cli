@@ -106,6 +106,8 @@ function nameWords(name: string): string {
 
 /** `dbPassword`, `DB_PASSWORD` and `db-password` are all password-like; `passwordHash` and `tokenizer` are not. */
 export function credentialKind(name: string): 'password' | 'secret' | null {
+    // An identifier or config key, not a sentence: translation files use whole English sentences as keys.
+    if (/\s/.test(name) || name.length > 80) return null;
     const words = nameWords(name);
     if (PASSWORD_NAME.test(words)) return 'password';
     return CREDENTIAL_NAME.test(words) ? 'secret' : null;
@@ -119,9 +121,12 @@ export function credentialKind(name: string): 'password' | 'secret' | null {
  */
 export function looksLikeSecretValue(value: string, kind: 'password' | 'secret', minLength: number): boolean {
     if (/\s/.test(value)) return false;
+    // Credentials are ASCII (base64, hex, random alphanumerics). Text in any other script is prose.
+    if (/[^\x00-\x7F]/.test(value)) return false;
     // A call, arrow function or template slot is code, not a credential.
     if (/[A-Za-z_$][\w$]*\(|=>|&&|\|\||\$\{/.test(value)) return false;
-    if (/^[A-Za-z]+$/.test(value) || /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+$/.test(value) || /^[a-z]+(?:-[a-z]+)+$/.test(value)) return false;
+    // Plain words, identifier paths, and words joined by hyphens, underscores or dots (`Two-Factor-Token`, `some_label`).
+    if (/^[A-Za-z]+(?:[-_.][A-Za-z]+)*$/.test(value) || /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+$/.test(value)) return false;
     const classes = [/[a-z]/, /[A-Z]/, /[0-9]/, /[^A-Za-z0-9]/].filter((pattern) => pattern.test(value)).length;
     if (classes < 2) return false;
     if (kind === 'password') return value.length >= 8 && classes >= 3 && looksHighEntropy(value, 8, 2.8);
