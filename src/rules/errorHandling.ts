@@ -24,6 +24,35 @@ function isPromiseLike(checker: ts.TypeChecker, expression: ts.Expression): bool
     });
 }
 
+/**
+ * A callback type like `() => void | Promise<void>` lets implementers choose: `stream.close()` may return nothing
+ * or a promise, and callers that do not need to wait are not wrong to ignore it. Only a value that is always a
+ * promise is a floating promise.
+ */
+function mayReturnNothing(checker: ts.TypeChecker, expression: ts.Expression): boolean {
+    let type: ts.Type;
+    try { type = checker.getTypeAtLocation(expression); } catch { return false; }
+    return type.isUnion() && type.types.some((member) => member.flags & (ts.TypeFlags.Void | ts.TypeFlags.Undefined));
+}
+
+const REACT_EFFECT_HOOKS = new Set(['useEffect', 'useLayoutEffect', 'useInsertionEffect']);
+
+/**
+ * React runs effects and event handlers and ignores what they return, so a promise started there cannot be
+ * awaited by the caller; whether leaving it floating is a bug depends on the handler. Reported, but less sure.
+ */
+function isInReactCallback(node: ts.Node): boolean {
+    for (let current: ts.Node | undefined = node.parent; current; current = current.parent) {
+        if ((ts.isArrowFunction(current) || ts.isFunctionExpression(current)) && current.parent) {
+            const parent = current.parent;
+            if (ts.isCallExpression(parent) && ts.isIdentifier(parent.expression) && REACT_EFFECT_HOOKS.has(parent.expression.text)) return true;
+            if (ts.isJsxExpression(parent) && ts.isJsxAttribute(parent.parent) && /^on[A-Z]/.test(parent.parent.name.getText())) return true;
+        }
+        if (ts.isFunctionDeclaration(current) || ts.isSourceFile(current)) break;
+    }
+    return false;
+}
+
 /** `(async () => { try { ... } catch { ... } })()`: the function handles its own failures, so nothing can reject. */
 function isSelfHandlingAsyncIife(call: ts.CallExpression): boolean {
     let callee: ts.Expression = call.expression;
@@ -38,6 +67,9 @@ function isSelfHandlingAsyncIife(call: ts.CallExpression): boolean {
  * are being used for their side effects; the returned value is the same object, not a new promise to await.
  */
 function returnsItsInput(checker: ts.TypeChecker, call: ts.CallExpression): boolean {
+    // `Object.assign(promise, extras)` types as `Promise<T> & Extras`, a new type, but it hands back the object it was given.
+    if (ts.isPropertyAccessExpression(call.expression) && ts.isIdentifier(call.expression.expression) && call.expression.expression.text === 'Object' &&
+        ['assign', 'defineProperty', 'defineProperties', 'freeze', 'seal', 'setPrototypeOf'].includes(call.expression.name.text)) return true;
     let result: ts.Type;
     try { result = checker.getTypeAtLocation(call); } catch { return false; }
     const typeOf = (expression: ts.Expression): ts.Type | null => {
@@ -128,10 +160,10 @@ export function runErrorHandlingRules(context: RuleContext): Finding[] {
 
             if (isRuleEnabled(context.config, 'ERR003') && ts.isExpressionStatement(node) && ts.isCallExpression(node.expression)) {
                 const call = node.expression;
-                if (propertyCallName(call) !== 'then' && !promiseChainHasCatch(call) && isPromiseLike(checker, call) && !isSelfHandlingAsyncIife(call) && !returnsItsInput(checker, call)) {
+                if (propertyCallName(call) !== 'then' && !promiseChainHasCatch(call) && isPromiseLike(checker, call) && !mayReturnNothing(checker, call) && !isSelfHandlingAsyncIife(call) && !returnsItsInput(checker, call)) {
                     const { line, column } = lineAndColumn(sourceFile, node.getStart());
                     findings.push(buildFinding({
-                        ruleId: 'ERR003', category: 'errorHandling', severity: 'MEDIUM', confidence: 'HIGH', file: relativePath, line, column,
+                        ruleId: 'ERR003', category: 'errorHandling', severity: 'MEDIUM', confidence: isInReactCallback(node) ? 'LOW' : 'HIGH', file: relativePath, line, column,
                         message: 'Floating promise', description: 'The result of this Promise-like call is neither awaited nor handled.', evidence: node.getText().slice(0, 160),
                         suggestion: 'Add await, or explicitly handle rejection with .catch().', fixAvailable: false
                     }));

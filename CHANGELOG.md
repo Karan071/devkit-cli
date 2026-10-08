@@ -8,6 +8,18 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **Per-rule false positives** (#8: R1-R4).
+  - **ERR003** ignores calls typed `void | Promise<void>` and `Object.assign`
+    decorators, and reports a promise started inside a React effect or an
+    `on*` handler at `LOW` confidence (R1).
+  - **JS002** allows `typeof x != "undefined"` and `x == undefined`/`void 0`,
+    like `== null` (R2).
+  - Generated files are also detected by shape: average line over 200
+    characters, Emscripten glue, or a `/*!` banner above long-line bundles (R3).
+  - **DUP001** reports one finding per cluster of duplicated code instead of one
+    per pair, skips `locale/`, `i18n/` and `fixtures/` directories, and ignores
+    windows that are mostly literals or have almost no logic (R4).
+
 - **Unused files and exports** (#8: F1-F8).
   - **DEAD010/DEAD009** resolve workspace packages by name even when
     `node_modules` links are missing: `@scope/pkg`, `@scope/pkg/sub.js`

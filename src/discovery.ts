@@ -77,10 +77,21 @@ export function isGeneratedByContent(text: string): boolean {
     return looksMinified(text);
 }
 
+// Output of the Emscripten toolchain: its runtime shell and wasm loaders are never hand-written.
+const EMSCRIPTEN_MARKER = /\bEMSCRIPTEN_(?:START|END)_|\bvar Module\s*=\s*(?:typeof Module|\{)|\bModule\[["'](?:preRun|postRun|wasmBinary|locateFile)["']\]|\/\/ include: (?:shell|preamble|postamble)\.js/;
+
+/**
+ * Judged by shape, since not every generated file says so: very long lines (inlined wasm or base64 payloads,
+ * bundles), Emscripten glue, or a preserved `/*!` license banner above bundled code.
+ */
 function looksMinified(text: string): boolean {
-    if (text.length < 5000) return false;
+    if (text.length < 2000) return false;
     const lines = text.split('\n');
-    return text.length / lines.length > 300;
+    const averageLine = text.length / lines.length;
+    if (averageLine > 200) return true;
+    if (EMSCRIPTEN_MARKER.test(text.slice(0, 20_000))) return true;
+    // A `/*! ... */` or `@license`/`@preserve` banner survives minification; with long lines below it, this is a vendored bundle.
+    return averageLine > 120 && /^\s*\/\*[!*]\s*(?:[\s\S]{0,2000}?)(?:@license|@preserve|\*\/)/.test(text.slice(0, 2500)) && /(?:^|\n)\s*\/\*!/.test(text.slice(0, 2500));
 }
 
 function isBinaryContent(buffer: Buffer): boolean {
