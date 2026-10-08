@@ -1,0 +1,8 @@
+{
+  "project": { "name": "devkit-quality" },
+  "scan": {
+    "include": ["**/*"],
+    "exclude": ["node_modules/**", "dist/**", "coverage/**", ".git/**", ".devkit/**", "bench/seeded/**", "bench/.cache/**", "bench/results/**"]
+  },
+  "rules": {}
+}

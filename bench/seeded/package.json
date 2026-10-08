@@ -1,0 +1,9 @@
+{
+  "name": "devkit-bench-seeded",
+  "version": "0.0.0",
+  "private": true,
+  "main": "src/index.ts",
+  "dependencies": {
+    "lodash": "^4.17.21"
+  }
+}

@@ -7,3 +7,6 @@ coverage/
 .DS_Store
 .vscode/
 .idea/
+bench/.cache/
+bench/results/
+bench/labels/*.todo.jsonl

@@ -1,0 +1,68 @@
+{
+  "rules": {
+    "DEAD010": {
+      "accuracy": 100,
+      "labeled": 1
+    },
+    "DEP001": {
+      "accuracy": 100,
+      "labeled": 1
+    },
+    "DEP002": {
+      "accuracy": 100,
+      "labeled": 1
+    },
+    "DEP003": {
+      "accuracy": 100,
+      "labeled": 1
+    },
+    "ERR001": {
+      "accuracy": 100,
+      "labeled": 1
+    },
+    "JS001": {
+      "accuracy": 100,
+      "labeled": 1
+    },
+    "JS002": {
+      "accuracy": 0,
+      "labeled": 1
+    },
+    "SEC001": {
+      "accuracy": 100,
+      "labeled": 3
+    },
+    "SEC002": {
+      "accuracy": 100,
+      "labeled": 1
+    },
+    "SEC003": {
+      "accuracy": 100,
+      "labeled": 1
+    },
+    "SEC004": {
+      "accuracy": 100,
+      "labeled": 1
+    },
+    "SEC005": {
+      "accuracy": 100,
+      "labeled": 1
+    },
+    "SEC007": {
+      "accuracy": 100,
+      "labeled": 1
+    },
+    "SEC008": {
+      "accuracy": 100,
+      "labeled": 1
+    },
+    "SEC009": {
+      "accuracy": 100,
+      "labeled": 1
+    },
+    "SEC010": {
+      "accuracy": 100,
+      "labeled": 1
+    }
+  }
+}
