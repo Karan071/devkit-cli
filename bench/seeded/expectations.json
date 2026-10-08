@@ -1,35 +1,256 @@
 {
   "planted": [
-    { "id": "aws-access-key", "rule": "SEC001", "file": "src/config.ts" },
-    { "id": "stripe-secret-key", "rule": "SEC001", "file": "src/config.ts" },
-    { "id": "github-token", "rule": "SEC001", "file": "src/config.ts" },
-    { "id": "hardcoded-password", "rule": "SEC001", "file": "src/config.ts", "issue": "G2" },
-    { "id": "eval", "rule": "SEC002", "file": "src/server.ts" },
-    { "id": "command-injection", "rule": "SEC003", "file": "src/shell.ts" },
-    { "id": "innerHTML", "rule": "SEC004", "file": "src/render.ts" },
-    { "id": "weak-hash", "rule": "SEC005", "file": "src/hash.ts" },
-    { "id": "tls-agent", "rule": "SEC007", "file": "src/http.ts", "issue": "G1" },
-    { "id": "tls-env", "rule": "SEC007", "file": "src/http.ts" },
-    { "id": "sql-template", "rule": "SEC008", "file": "src/db.ts" },
-    { "id": "sql-via-variable", "rule": "SEC008", "file": "src/db.ts", "issue": "G6" },
-    { "id": "path-traversal", "rule": "SEC009", "file": "src/server.ts" },
-    { "id": "dynamic-execution", "rule": "SEC010", "file": "src/sandbox.ts" },
-    { "id": "import-cycle", "rule": "DEP003", "file": "src/cycleA.ts" },
-    { "id": "orphan-file", "rule": "DEAD010", "file": "src/orphan.ts" },
-    { "id": "unlisted-dependency", "rule": "DEP002", "file": "package.json", "line": "any" },
-    { "id": "unused-dependency", "rule": "DEP001", "file": "package.json", "line": "any" },
-    { "id": "empty-catch", "rule": "ERR001", "file": "src/quality.ts" },
-    { "id": "var-declaration", "rule": "JS001", "file": "src/quality.ts" }
+    {
+      "id": "aws-access-key",
+      "rule": "SEC001",
+      "file": "src/config.ts"
+    },
+    {
+      "id": "stripe-secret-key",
+      "rule": "SEC001",
+      "file": "src/config.ts"
+    },
+    {
+      "id": "github-token",
+      "rule": "SEC001",
+      "file": "src/config.ts"
+    },
+    {
+      "id": "hardcoded-password",
+      "rule": "SEC001",
+      "file": "src/config.ts"
+    },
+    {
+      "id": "eval",
+      "rule": "SEC002",
+      "file": "src/server.ts"
+    },
+    {
+      "id": "command-injection",
+      "rule": "SEC003",
+      "file": "src/shell.ts"
+    },
+    {
+      "id": "innerHTML",
+      "rule": "SEC004",
+      "file": "src/render.ts"
+    },
+    {
+      "id": "weak-hash",
+      "rule": "SEC005",
+      "file": "src/hash.ts"
+    },
+    {
+      "id": "tls-agent",
+      "rule": "SEC007",
+      "file": "src/http.ts"
+    },
+    {
+      "id": "tls-env",
+      "rule": "SEC007",
+      "file": "src/http.ts"
+    },
+    {
+      "id": "sql-template",
+      "rule": "SEC008",
+      "file": "src/db.ts"
+    },
+    {
+      "id": "sql-via-variable",
+      "rule": "SEC008",
+      "file": "src/db.ts"
+    },
+    {
+      "id": "path-traversal",
+      "rule": "SEC009",
+      "file": "src/server.ts"
+    },
+    {
+      "id": "dynamic-execution",
+      "rule": "SEC010",
+      "file": "src/sandbox.ts"
+    },
+    {
+      "id": "import-cycle",
+      "rule": "DEP003",
+      "file": "src/cycleA.ts"
+    },
+    {
+      "id": "orphan-file",
+      "rule": "DEAD010",
+      "file": "src/orphan.ts"
+    },
+    {
+      "id": "unlisted-dependency",
+      "rule": "DEP002",
+      "file": "package.json",
+      "line": "any"
+    },
+    {
+      "id": "unused-dependency",
+      "rule": "DEP001",
+      "file": "package.json",
+      "line": "any"
+    },
+    {
+      "id": "empty-catch",
+      "rule": "ERR001",
+      "file": "src/quality.ts"
+    },
+    {
+      "id": "var-declaration",
+      "rule": "JS001",
+      "file": "src/quality.ts"
+    },
+    {
+      "id": "google-api-key",
+      "rule": "SEC001",
+      "file": "src/keys.ts"
+    },
+    {
+      "id": "openai-key",
+      "rule": "SEC001",
+      "file": "src/keys.ts"
+    },
+    {
+      "id": "anthropic-key",
+      "rule": "SEC001",
+      "file": "src/keys.ts"
+    },
+    {
+      "id": "gitlab-token",
+      "rule": "SEC001",
+      "file": "src/keys.ts"
+    },
+    {
+      "id": "npm-token",
+      "rule": "SEC001",
+      "file": "src/keys.ts"
+    },
+    {
+      "id": "sendgrid-key",
+      "rule": "SEC001",
+      "file": "src/keys.ts"
+    },
+    {
+      "id": "twilio-key",
+      "rule": "SEC001",
+      "file": "src/keys.ts"
+    },
+    {
+      "id": "azure-storage-key",
+      "rule": "SEC001",
+      "file": "src/keys.ts"
+    },
+    {
+      "id": "database-url",
+      "rule": "SEC001",
+      "file": "src/keys.ts"
+    },
+    {
+      "id": "sql-prisma-unsafe",
+      "rule": "SEC008",
+      "file": "src/db.ts"
+    },
+    {
+      "id": "sql-knex-raw",
+      "rule": "SEC008",
+      "file": "src/db.ts"
+    },
+    {
+      "id": "sql-sequelize",
+      "rule": "SEC008",
+      "file": "src/db.ts"
+    }
   ],
   "decoys": [
-    { "id": "comment-mentions-token", "rule": "SEC001", "file": "src/config.ts" },
-    { "id": "env-credential", "rule": "SEC001", "file": "src/config.ts" },
-    { "id": "test-fixture-secret", "rule": "SEC001", "file": "src/index.test.ts", "tolerate": "LOW" },
-    { "id": "regexp-exec", "rule": "SEC003", "file": "src/shell.ts" },
-    { "id": "literal-html", "rule": "SEC004", "file": "src/render.ts" },
-    { "id": "strong-hash", "rule": "SEC005", "file": "src/hash.ts" },
-    { "id": "sql-parameterized", "rule": "SEC008", "file": "src/db.ts" },
-    { "id": "typeof-loose-equality", "rule": "JS002", "file": "src/env.ts", "issue": "R2" },
-    { "id": "null-loose-equality", "rule": "JS002", "file": "src/env.ts" }
+    {
+      "id": "comment-mentions-token",
+      "rule": "SEC001",
+      "file": "src/config.ts"
+    },
+    {
+      "id": "env-credential",
+      "rule": "SEC001",
+      "file": "src/config.ts"
+    },
+    {
+      "id": "regexp-exec",
+      "rule": "SEC003",
+      "file": "src/shell.ts"
+    },
+    {
+      "id": "test-fixture-secret",
+      "rule": "SEC001",
+      "file": "src/index.test.ts"
+    },
+    {
+      "id": "literal-html",
+      "rule": "SEC004",
+      "file": "src/render.ts"
+    },
+    {
+      "id": "strong-hash",
+      "rule": "SEC005",
+      "file": "src/hash.ts"
+    },
+    {
+      "id": "sql-parameterized",
+      "rule": "SEC008",
+      "file": "src/db.ts"
+    },
+    {
+      "id": "typeof-loose-equality",
+      "rule": "JS002",
+      "file": "src/env.ts",
+      "issue": "R2"
+    },
+    {
+      "id": "null-loose-equality",
+      "rule": "JS002",
+      "file": "src/env.ts"
+    },
+    {
+      "id": "public-firebase-key",
+      "rule": "SEC001",
+      "file": "src/firebase.ts"
+    },
+    {
+      "id": "stripe-publishable-key",
+      "rule": "SEC001",
+      "file": "src/billing.ts"
+    },
+    {
+      "id": "fake-github-token",
+      "rule": "SEC001",
+      "file": "src/billing.ts",
+      "tolerate": "LOW"
+    },
+    {
+      "id": "prose-token-label",
+      "rule": "SEC001",
+      "file": "src/labels.ts"
+    },
+    {
+      "id": "password-hint",
+      "rule": "SEC001",
+      "file": "src/labels.ts"
+    },
+    {
+      "id": "identifier-password-value",
+      "rule": "SEC001",
+      "file": "src/labels.ts"
+    },
+    {
+      "id": "yaml-key-name",
+      "rule": "SEC001",
+      "file": "config/app.yaml"
+    },
+    {
+      "id": "json-metadata-values",
+      "rule": "SEC001",
+      "file": "config/site.json",
+      "line": "any"
+    }
   ]
 }

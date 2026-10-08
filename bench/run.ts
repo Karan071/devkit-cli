@@ -25,7 +25,7 @@ function main(): void {
             commit: repo.commit,
             score: summary.score,
             durationMs: Date.now() - started,
-            findings: summary.findings.map(({ ruleId, file, line, confidence }) => ({ ruleId, file, line, confidence }))
+            findings: summary.findings.map(({ ruleId, severity, file, line, confidence }) => ({ ruleId, severity, file, line, confidence }))
         };
         fs.writeFileSync(path.join(RESULTS_DIR, `${repo.name}.json`), `${JSON.stringify(result)}\n`);
         console.log(`[${repo.name}] ${result.findings.length} findings, score ${summary.score.toFixed(1)}, ${(result.durationMs / 1000).toFixed(1)}s`);

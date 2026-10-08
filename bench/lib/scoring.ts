@@ -7,6 +7,7 @@ const CONFIDENCE_ORDER: Confidence[] = ['LOW', 'MEDIUM', 'HIGH', 'CERTAIN'];
 /** The slice of a scanner finding the benchmark needs. */
 export interface BenchFinding {
     ruleId: string;
+    severity?: string;
     file: string;
     line: number;
     confidence: Confidence;
@@ -184,6 +185,8 @@ export function evaluate(input: EvaluateInput): Report {
 
     let unlabeledSeeded = 0;
     for (const finding of seededFindings) {
+        // Informational findings are shown but never cost points, so they are neither right nor wrong.
+        if (finding.severity === 'INFO') continue;
         const isPlanted = expectations.planted.some((entry) => atLine(finding, entry.rule, entry.file, lineOf('planted', entry.id)));
         const decoy = expectations.decoys.find((entry) => atLine(finding, entry.rule, entry.file, lineOf('decoy', entry.id)));
         if (isPlanted) count(finding.ruleId, true);
@@ -194,7 +197,7 @@ export function evaluate(input: EvaluateInput): Report {
     const flaggedDecoys = expectations.decoys
         .map((entry) => ({
             ...entry,
-            findings: seededFindings.filter((finding) => atLine(finding, entry.rule, entry.file, lineOf('decoy', entry.id)) && !isTolerated(finding, entry.tolerate)).length
+            findings: seededFindings.filter((finding) => finding.severity !== 'INFO' && atLine(finding, entry.rule, entry.file, lineOf('decoy', entry.id)) && !isTolerated(finding, entry.tolerate)).length
         }))
         .filter((entry) => entry.findings > 0);
 
@@ -206,7 +209,7 @@ export function evaluate(input: EvaluateInput): Report {
             const label = labelIndex.get(key);
             if (!label) continue;
             usedLabels.add(key);
-            count(finding.ruleId, label.verdict);
+            if (finding.severity !== 'INFO') count(finding.ruleId, label.verdict);
         }
     }
     // A label only goes stale when its repo was scanned; labels for repos without results are simply not applied.

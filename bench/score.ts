@@ -26,7 +26,7 @@ function option(name: string): string | undefined {
 function scanSeeded(): BenchFinding[] {
     const dir = materializeSeeded();
     try {
-        return scanRepository(dir).findings.map(({ ruleId, file, line, confidence }) => ({ ruleId, file, line, confidence }));
+        return scanRepository(dir).findings.map(({ ruleId, severity, file, line, confidence }) => ({ ruleId, severity, file, line, confidence }));
     } finally {
         fs.rmSync(dir, { recursive: true, force: true });
     }

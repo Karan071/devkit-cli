@@ -1,0 +1,3 @@
+server:
+  authMiddleware: requireSessionHandlerName # decoy: yaml-key-name
+  port: 8080

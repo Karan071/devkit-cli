@@ -6,7 +6,37 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **SEC001 secret detection reworked** (#8: S1-S6, G2-G4). Moved to
+  `src/rules/secrets.ts`.
+  - In TS/JS the name-based check reads string literals from the syntax tree, so
+    comments are never flagged, and names must *end* in a credential word
+    (`dbPassword`, `API_KEY`; not `tokenizer` or `passwordHash`).
+  - JSON files are parsed and only values are judged; keys and
+    `dependencies`/`author`/`contributors` metadata are skipped. In YAML, .env
+    and TOML only the value is judged, so `authMiddleware: handler` is no
+    longer a secret.
+  - A value must be one token (no spaces), mix character types and not look
+    like code; passwords need three character types.
+  - Public-by-design keys (Firebase web keys, Stripe `pk_`, anon JWTs) and
+    sample credentials in tests, fixtures and docs are reported as `INFO`.
+    `INFO` findings are shown but no longer cost any points. Live-looking keys
+    (AWS `AKIA`, `sk_live_`, valid GitHub tokens) stay at full severity in
+    tests.
+  - `ghp_`/`gho_`/... tokens are checked against GitHub's CRC32 checksum; a
+    string that fails it is reported at `LOW` confidence.
+- **SEC007** also flags `rejectUnauthorized: false`, `strictSSL: false`,
+  `insecure: true` and a no-op `checkServerIdentity` (G1).
+- **SEC008** also checks `raw`, `$queryRawUnsafe` and `$executeRawUnsafe`
+  (plus `pool.query`, `client.query`, `knex.raw`, `sequelize.query`), and
+  follows a query built into a variable before it is passed in (G5, G6).
+
 ### Added
+
+- Secret formats: Google, OpenAI, Anthropic, GitLab, npm, SendGrid, Twilio and
+  Azure storage keys, Stripe publishable keys (INFO) and database URLs with an
+  embedded password (G3).
 
 - **Benchmark harness** (`bench/`, part of #8): a measurable accuracy baseline
   that later rule changes are judged against.

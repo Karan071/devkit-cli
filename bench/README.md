@@ -24,7 +24,7 @@ npm run bench:sample -- 30          # sample 30 findings per rule to label -> la
 ## How scores are computed
 
 - **Catch rate** = planted issues reported by their rule at the planted line / planted issues.
-- **Accuracy** (per rule) = real findings / labeled findings. A finding is *real* if it lands on a planted issue or is labeled `true`; it is *false* if it lands on a decoy (above its `tolerate` confidence) or is labeled `false`. Findings with no label are not scored.
+- **Accuracy** (per rule) = real findings / labeled findings. A finding is *real* if it lands on a planted issue or is labeled `true`; it is *false* if it lands on a decoy (above its `tolerate` confidence) or is labeled `false`. `INFO` findings are visible but never cost points, so they are neither right nor wrong and are not scored. Findings with no label are not scored.
 - A rule's figure is only trustworthy with 30+ labels; the report marks smaller counts `(low)`.
 
 ## The gate
