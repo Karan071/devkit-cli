@@ -9,6 +9,11 @@ import { getRuleThreshold, isRuleEnabled } from '../config';
 // Identifiers are normalised, so very short windows match declarative boilerplate (`export const X = factory(...)`).
 const DEFAULT_MIN_TOKENS = 60;
 const WINDOW_STEP = 5;
+// Translation tables and test data repeat by design: a duplicate there is a pattern, not a copy-paste.
+const REPETITIVE_DIRECTORY = /(?:^|\/)(?:locales?|i18n|l10n|lang|langs|translations?|fixtures?|__fixtures__|testdata|test-data)\//i;
+// A window dominated by literals (or with next to no logic) is a data table; there is no function to extract.
+const DATA_LITERAL_SHARE = 0.3;
+const MIN_LOGIC_SHARE = 0.1;
 
 interface Token {
     text: string;
@@ -96,6 +101,28 @@ export function normalizeWindow(window: Token[]): string {
     }).join('\u0001');
 }
 
+const LITERAL_KINDS = new Set([
+    ts.SyntaxKind.StringLiteral, ts.SyntaxKind.NumericLiteral, ts.SyntaxKind.BigIntLiteral, ts.SyntaxKind.NoSubstitutionTemplateLiteral,
+    ts.SyntaxKind.RegularExpressionLiteral, ts.SyntaxKind.TemplateHead, ts.SyntaxKind.TemplateMiddle, ts.SyntaxKind.TemplateTail
+]);
+
+// Inside TypeScript's binary-operator range, but structure of data (`key: value`, decorators), not logic.
+const DATA_PUNCTUATION = new Set([ts.SyntaxKind.CommaToken, ts.SyntaxKind.ColonToken, ts.SyntaxKind.AtToken]);
+
+function isLogicToken(kind: ts.SyntaxKind): boolean {
+    return (kind >= ts.SyntaxKind.FirstReservedWord && kind <= ts.SyntaxKind.LastReservedWord) ||
+        (kind >= ts.SyntaxKind.FirstBinaryOperator && kind <= ts.SyntaxKind.LastBinaryOperator && !DATA_PUNCTUATION.has(kind)) ||
+        kind === ts.SyntaxKind.OpenParenToken || kind === ts.SyntaxKind.EqualsGreaterThanToken || kind === ts.SyntaxKind.DotToken ||
+        kind === ts.SyntaxKind.QuestionToken || kind === ts.SyntaxKind.ExclamationToken;
+}
+
+/** Whether a window of tokens is mostly literal data, or has almost no operators, calls or keywords. */
+export function isDataWindow(window: Token[]): boolean {
+    const literals = window.filter((token) => LITERAL_KINDS.has(token.kind)).length;
+    const logic = window.filter((token) => isLogicToken(token.kind)).length;
+    return literals / window.length >= DATA_LITERAL_SHARE || logic / window.length < MIN_LOGIC_SHARE;
+}
+
 function severityForSpan(spanTokens: number, minTokens: number): Severity {
     if (spanTokens >= minTokens * 4) return 'HIGH';
     if (spanTokens >= minTokens * 2) return 'MEDIUM';
@@ -142,9 +169,11 @@ export function runDuplicationRules(context: RuleContext): Finding[] {
         if (tokens.length < minTokens) continue;
 
         const relative = relPath(file);
+        if (REPETITIVE_DIRECTORY.test(relative)) continue;
 
         for (let i = 0; i + minTokens <= tokens.length; i += WINDOW_STEP) {
             const window = tokens.slice(i, i + minTokens);
+            if (isDataWindow(window)) continue;
             const joined = normalizeWindow(window);
             const hash = crypto.createHash('sha1').update(joined).digest('hex');
             const entry: WindowEntry = {
@@ -164,68 +193,132 @@ export function runDuplicationRules(context: RuleContext): Finding[] {
     for (const entries of hashBuckets.values()) {
         if (entries.length < 2) continue;
 
-        // A block present in many files (locale tables, generated-looking adapters) is one pattern, not
-        // N*(N-1)/2 copy-pastes. Report it once, between the first two files, with the true count.
+        // A block present in many files is one pattern, not N*(N-1)/2 copy-pastes.
         const distinctFiles = new Set(entries.map((entry) => entry.file));
         const copies = distinctFiles.size;
-        const compared = copies >= 3
-            ? entries.filter((entry, index) => index === 0 || (entry.file !== entries[0].file && entries.findIndex((other) => other.file === entry.file) === index)).slice(0, 2)
-            : entries;
+        // One entry per file. With three or more files the first is compared to each of the others (a star), which
+        // links them all into one cluster without N*(N-1)/2 pairs.
+        const perFile = entries.filter((entry, index) => entries.findIndex((other) => other.file === entry.file) === index);
+        const pairs: Array<[WindowEntry, WindowEntry]> = [];
+        if (copies >= 3) for (const other of perFile.slice(1)) pairs.push([perFile[0], other]);
+        else for (let i = 0; i < entries.length; i += 1) for (let j = i + 1; j < entries.length; j += 1) pairs.push([entries[i], entries[j]]);
 
-        for (let i = 0; i < compared.length; i += 1) {
-            for (let j = i + 1; j < compared.length; j += 1) {
-                const a = compared[i];
-                const b = compared[j];
-                // Within one file, overlapping windows are repetitive code, not a copy-paste.
-                if (a.file === b.file && Math.abs(a.startIndex - b.startIndex) < minTokens) continue;
+        for (const [a, b] of pairs) {
+            // Within one file, overlapping windows are repetitive code, not a copy-paste.
+            if (a.file === b.file && Math.abs(a.startIndex - b.startIndex) < minTokens) continue;
 
-                const key = a.file <= b.file ? `${a.file}::${b.file}` : `${b.file}::${a.file}`;
-                const [first, second] = a.file <= b.file ? [a, b] : [b, a];
+            const key = a.file <= b.file ? `${a.file}::${b.file}` : `${b.file}::${a.file}`;
+            const [first, second] = a.file <= b.file ? [a, b] : [b, a];
 
-                if (!pairRanges.has(key)) pairRanges.set(key, []);
-                pairRanges.get(key)!.push({
-                    startLineA: first.startLine,
-                    endLineA: first.endLine,
-                    startLineB: second.startLine,
-                    endLineB: second.endLine,
-                    startIndexA: first.startIndex,
-                    endIndexA: first.startIndex + minTokens,
-                    startIndexB: second.startIndex,
-                    copies
-                });
-            }
+            if (!pairRanges.has(key)) pairRanges.set(key, []);
+            pairRanges.get(key)!.push({
+                startLineA: first.startLine,
+                endLineA: first.endLine,
+                startLineB: second.startLine,
+                endLineB: second.endLine,
+                startIndexA: first.startIndex,
+                endIndexA: first.startIndex + minTokens,
+                startIndexB: second.startIndex,
+                copies
+            });
         }
     }
 
-    const findings: Finding[] = [];
+    return clusterFindings(pairRanges, minTokens);
+}
 
+interface Block {
+    file: string;
+    start: number;
+    end: number;
+}
+
+/**
+ * One finding per cluster of mutually duplicated code, not one per pair. A function copied into five files, or a
+ * family of near-identical files, is a single problem; reporting every pair buries it under hundreds of findings.
+ */
+function clusterFindings(pairRanges: Map<string, MatchRange[]>, minTokens: number): Finding[] {
+    const blocks: Block[] = [];
+    const parent: number[] = [];
+    const find = (index: number): number => {
+        while (parent[index] !== index) {
+            parent[index] = parent[parent[index]];
+            index = parent[index];
+        }
+        return index;
+    };
+    const union = (a: number, b: number): void => { parent[find(a)] = find(b); };
+    const addBlock = (file: string, start: number, end: number): number => {
+        blocks.push({ file, start, end });
+        parent.push(blocks.length - 1);
+        return blocks.length - 1;
+    };
+
+    const spans = new Map<number, { tokens: number; copies: number }>();
     for (const [key, ranges] of pairRanges) {
         const [fileA, fileB] = key.split('::');
-        const merged = mergeRanges(ranges);
-
-        for (const range of merged) {
+        for (const range of mergeRanges(ranges)) {
             const spanTokens = range.endIndexA - range.startIndexA;
             // Repetition inside one file is usually a local pattern (a family of similar declarations), so it
             // has to be substantially larger than the minimum before it reads as copy-paste.
             if (fileA === fileB && spanTokens < minTokens * 2) continue;
-
-            findings.push(
-                buildFinding({
-                    ruleId: 'DUP001',
-                    category: 'duplication',
-                    severity: severityForSpan(spanTokens, minTokens),
-                    confidence: range.copies >= 3 ? 'LOW' : 'MEDIUM',
-                    file: fileA,
-                    line: range.startLineA,
-                    column: 1,
-                    message: 'Duplicate code block',
-                    description: `Lines ${range.startLineA}-${range.endLineA} closely match ${fileB}:${range.startLineB}-${range.endLineB}.${range.copies >= 3 ? ` The same block appears in ${range.copies} files, so it is likely intentional repetition (data tables, adapters).` : ''}`,
-                    evidence: `${fileB}:${range.startLineB}-${range.endLineB}`,
-                    suggestion: 'Extract the shared logic into a reusable function or module.',
-                    fixAvailable: false
-                })
-            );
+            const a = addBlock(fileA, range.startLineA, range.endLineA);
+            const b = addBlock(fileB, range.startLineB, range.endLineB);
+            union(a, b);
+            spans.set(a, { tokens: spanTokens, copies: range.copies });
         }
+    }
+
+    // Overlapping blocks of one file (found through different partners) are the same code.
+    const byFile = new Map<string, number[]>();
+    blocks.forEach((block, index) => byFile.set(block.file, [...(byFile.get(block.file) ?? []), index]));
+    for (const indexes of byFile.values()) {
+        const sorted = [...indexes].sort((x, y) => blocks[x].start - blocks[y].start);
+        let reach = sorted.length > 0 ? blocks[sorted[0]].end : 0;
+        let anchor = sorted[0];
+        for (const index of sorted.slice(1)) {
+            if (blocks[index].start <= reach) union(anchor, index);
+            else anchor = index;
+            reach = Math.max(reach, blocks[index].end);
+        }
+    }
+
+    const clusters = new Map<number, number[]>();
+    blocks.forEach((_, index) => clusters.set(find(index), [...(clusters.get(find(index)) ?? []), index]));
+
+    const findings: Finding[] = [];
+    for (const members of clusters.values()) {
+        // Collapse overlapping blocks into the places they cover.
+        const places: Block[] = [];
+        for (const block of members.map((index) => blocks[index]).sort((x, y) => x.file.localeCompare(y.file) || x.start - y.start)) {
+            const last = places[places.length - 1];
+            if (last && last.file === block.file && block.start <= last.end) last.end = Math.max(last.end, block.end);
+            else places.push({ ...block });
+        }
+        if (places.length < 2) continue;
+
+        const [primary, ...others] = places;
+        const spanTokens = Math.max(...members.map((index) => spans.get(index)?.tokens ?? 0));
+        const copies = Math.max(...members.map((index) => spans.get(index)?.copies ?? 2), new Set(places.map((place) => place.file)).size);
+        const shown = others.slice(0, 4).map((place) => `${place.file}:${place.start}-${place.end}`);
+        const more = others.length > shown.length ? ` and ${others.length - shown.length} more` : '';
+
+        findings.push(
+            buildFinding({
+                ruleId: 'DUP001',
+                category: 'duplication',
+                severity: severityForSpan(spanTokens, minTokens),
+                confidence: copies >= 3 ? 'LOW' : 'MEDIUM',
+                file: primary.file,
+                line: primary.start,
+                column: 1,
+                message: 'Duplicate code block',
+                description: `Lines ${primary.start}-${primary.end} closely match ${shown[0]}.${others.length > 1 ? ` The same code appears in ${places.length} places: ${shown.join(', ')}${more}.` : ''}${copies >= 3 ? ' With this many copies it is likely intentional repetition (adapters, per-type variants).' : ''}`,
+                evidence: shown[0],
+                suggestion: 'Extract the shared logic into a reusable function or module.',
+                fixAvailable: false
+            })
+        );
     }
 
     return findings;

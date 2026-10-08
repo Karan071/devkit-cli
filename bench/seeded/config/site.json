@@ -1,0 +1,7 @@
+{
+  "name": "seeded-site",
+  "author": "Jane Doe <jane.doe@example.com> (https://janedoe.example)",
+  "dependencies": {
+    "next-auth": "github:nextauthjs/next-auth#v5.0.0-beta.25-with-long-ref"
+  }
+}

@@ -20,7 +20,11 @@ import { runArchitectureRules } from './rules/architecture';
 import { runHygieneRules } from './rules/hygiene';
 import { computeScores } from './scoring';
 import { isSuppressed } from './suppressions';
-import { ruleAppliesTo } from './fileKind';
+import { disambiguateFingerprints } from './finding';
+import { classifyFile, ruleAppliesTo } from './fileKind';
+import { TYPE_AWARE_RULES, assessTypeAwareness } from './typeAwareness';
+import { describeEnvironment } from './environment';
+import { runAdapters, type AdapterName, type AdapterOptions } from './adapters';
 import type { Finding, RepoMetrics, ScanCoverage, ScanSummary } from './types';
 
 export interface ScanProgress {
@@ -34,6 +38,12 @@ export interface ScanProgress {
 }
 
 export type ProgressListener = (progress: ScanProgress) => void;
+
+/** Shipped code and the scripts that run for real; everything else (tests, examples, fixtures, benchmarks) is not scored. */
+function isScoredFile(relativePath: string): boolean {
+    const kind = classifyFile(relativePath);
+    return kind === 'production' || kind === 'script';
+}
 
 function countClassDeclarations(program: ts.Program, files: string[]): number {
     let count = 0;
@@ -91,7 +101,15 @@ const RULE_PHASES: Array<[string, (context: RuleContext) => Finding[]]> = [
 // discovery, program, type-check, module graph, function metrics + rule phases + scoring
 const TOTAL_STEPS = 5 + RULE_PHASES.length + 1;
 
-export function scanRepository(projectRoot: string, onProgress: ProgressListener = () => undefined): ScanSummary {
+export interface ScanOptions {
+    /** Report findings in tests, examples, benchmarks and fixtures too (overrides `scan.includeNonProduction`). */
+    includeNonProduction?: boolean;
+    /** External tools whose findings are merged into the report (and so into the score and SARIF output). */
+    adapters?: AdapterName[];
+    adapterOptions?: AdapterOptions;
+}
+
+export function scanRepository(projectRoot: string, onProgress: ProgressListener = () => undefined, options: ScanOptions = {}): ScanSummary {
     const startedAt = Date.now();
     let step = 0;
     const phase = (label: string, current?: number, total?: number): void => {
@@ -103,7 +121,8 @@ export function scanRepository(projectRoot: string, onProgress: ProgressListener
     };
 
     nextPhase('Discovering files');
-    const config = loadConfig(projectRoot);
+    const loadedConfig = loadConfig(projectRoot);
+    const config = options.includeNonProduction === undefined ? loadedConfig : { ...loadedConfig, scan: { ...loadedConfig.scan, includeNonProduction: options.includeNonProduction } };
     const discovery = discoverFiles(projectRoot, config);
     const { files, allFiles, textFiles, generatedFiles } = discovery;
 
@@ -151,6 +170,20 @@ export function scanRepository(projectRoot: string, onProgress: ProgressListener
     }
 
     nextPhase('Scoring');
+    const warnings: string[] = [];
+    if (options.adapters && options.adapters.length > 0) {
+        const external = runAdapters(projectRoot, options.adapters, allFindings, options.adapterOptions);
+        allFindings.push(...external.findings);
+        warnings.push(...external.notes);
+    }
+    const typeAwareness = assessTypeAwareness(projectRoot, packageJson, program, files);
+    if (typeAwareness.degraded && typeAwareness.reason) {
+        warnings.push(typeAwareness.reason);
+        for (const finding of allFindings) {
+            if (TYPE_AWARE_RULES.has(finding.ruleId)) finding.confidence = 'LOW';
+        }
+    }
+
     let hiddenNonProduction = 0;
     const findings: Finding[] = allFindings.filter((finding) => {
         if (!config.scan.includeNonProduction && !ruleAppliesTo(finding.ruleId, finding.file)) {
@@ -162,6 +195,7 @@ export function scanRepository(projectRoot: string, onProgress: ProgressListener
     });
 
     let sourceLOC = 0;
+    let productionLOC = 0;
     let testLOC = 0;
     let commentLOC = 0;
     const largestFiles: Array<{ file: string; loc: number }> = [];
@@ -176,6 +210,7 @@ export function scanRepository(projectRoot: string, onProgress: ProgressListener
         } else {
             sourceLOC += loc;
         }
+        if (isScoredFile(relativePath)) productionLOC += loc;
 
         commentLOC += (text.match(/^\s*(\/\/|\/\*|\*)/gm) ?? []).length;
 
@@ -225,8 +260,13 @@ export function scanRepository(projectRoot: string, onProgress: ProgressListener
         testToSourceRatio: sourceLOC > 0 ? testLOC / sourceLOC : 0
     };
 
+    disambiguateFingerprints(findings);
+
     const architectureConfigured = Object.keys(config.architecture?.layers ?? {}).length > 0;
-    const { overallScore, categoryScores, securityScore, securityCapped } = computeScores(findings, sourceLOC + testLOC, { architectureConfigured });
+    // The headline score describes the code that ships. Findings in tests, examples, benchmarks and fixtures stay
+    // listed (when shown) but are not scored, and neither is their code in the size the penalties are scaled by.
+    const scoredFindings = findings.filter((finding) => isScoredFile(finding.file));
+    const { overallScore, categoryScores, securityScore, securityCapped, drains } = computeScores(scoredFindings, productionLOC, { architectureConfigured });
 
     const coverage: ScanCoverage = {
         discoveryMethod: discovery.method,
@@ -235,10 +275,12 @@ export function scanRepository(projectRoot: string, onProgress: ProgressListener
         textFilesScanned: textFiles.length,
         generatedFilesSkipped: generatedFiles.length,
         nonProductionFindingsHidden: hiddenNonProduction,
+        nonProductionFindingsUnscored: findings.length - scoredFindings.length,
         tooLargeFilesSkipped: discovery.skipped.tooLarge,
         binaryFilesSkipped: discovery.skipped.binary,
         languages: countLanguages(allFiles),
-        durationMs: Date.now() - startedAt
+        durationMs: Date.now() - startedAt,
+        ...(warnings.length > 0 ? { warnings } : {})
     };
 
     return {
@@ -248,6 +290,8 @@ export function scanRepository(projectRoot: string, onProgress: ProgressListener
         securityScore,
         securityCapped,
         findings,
+        scoreDrains: drains.slice(0, 3),
+        environment: describeEnvironment(projectRoot, packageJson, files, moduleGraph.entryPoints.size, typeAwareness.unresolved),
         metrics,
         generatedFiles,
         coverage

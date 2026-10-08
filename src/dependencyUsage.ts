@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { readFileSafe } from './discovery';
+import { mdxImportSpecifiers } from './mdxImports';
 
 /**
  * Evidence that a declared dependency is used even though no JS/TS file imports it.
@@ -23,6 +24,12 @@ const TOOL_PACKAGE_CONVENTION = /^(?:@([^/]+)\/)?([a-z0-9]+)-(?:[a-z0-9]+-)?(?:p
 // Standalone extension names inside a scope: `@typescript-eslint/parser`, `@babel/preset-env`, `@scope/plugin-x`.
 const SCOPED_EXTENSION = /^@[^/]+\/(?:parser|plugin|preset|loader|transformer|eslint-plugin|(?:plugin|preset|loader)-.+)$/;
 const STYLE_FILE = /\.(?:css|scss|sass|less|pcss|styl)$/i;
+/** Bundlers load a CSS preprocessor by itself when a file in its language is imported, so the package is used without an import. */
+const PREPROCESSORS: Array<{ extension: RegExp; packages: string[] }> = [
+    { extension: /\.(?:scss|sass)$/i, packages: ['sass', 'sass-embedded', 'node-sass'] },
+    { extension: /\.less$/i, packages: ['less'] },
+    { extension: /\.styl(?:us)?$/i, packages: ['stylus'] }
+];
 const STYLE_IMPORT = /@(?:import|use|forward|plugin|config|reference)\s+(?:url\(\s*)?["']([^"']+)["']/g;
 // Fields defined by the npm package.json spec itself. Anything else at the top level is tool configuration.
 const STANDARD_PACKAGE_FIELDS = new Set([
@@ -69,6 +76,16 @@ function quotedTokens(text: string): Set<string> {
         if (value) tokens.add(value);
     }
     return tokens;
+}
+
+/** `node_modules/<package>/...` inside a path: how Angular's styles, copy scripts and bundler configs point at an installed package. */
+const NODE_MODULES_PATH = /node_modules[\\/]((?:@[^\\/\s'"`]+[\\/])?[^\\/\s'"`]+)/g;
+
+function addNodeModulesPaths(text: string, declared: Set<string>, used: Set<string>): void {
+    for (const match of text.matchAll(NODE_MODULES_PATH)) {
+        const name = match[1].replace(/\\/g, '/');
+        if (declared.has(name)) used.add(name);
+    }
 }
 
 function addIfDeclared(token: string, declared: Set<string>, used: Set<string>): void {
@@ -190,6 +207,65 @@ function readManifest(searchRoots: string[], name: string): Record<string, unkno
     return null;
 }
 
+/**
+ * Executables that differ from the package name, for when `node_modules` and the lockfile cannot say (a fresh
+ * checkout). Without this, `typescript` looks unused in a repo whose scripts only ever call `tsc`.
+ */
+const KNOWN_COMMANDS: Record<string, string[]> = {
+    typescript: ['tsc', 'tsserver'],
+    '@biomejs/biome': ['biome'],
+    vitest: ['vitest'],
+    eslint: ['eslint'],
+    prettier: ['prettier'],
+    tsx: ['tsx'],
+    tsup: ['tsup'],
+    turbo: ['turbo'],
+    rimraf: ['rimraf'],
+    'ts-node': ['ts-node', 'ts-node-esm'],
+    jest: ['jest'],
+    mocha: ['mocha'],
+    nodemon: ['nodemon'],
+    concurrently: ['concurrently'],
+    'cross-env': ['cross-env', 'cross-env-shell'],
+    'npm-run-all': ['npm-run-all', 'run-s', 'run-p'],
+    'npm-run-all2': ['npm-run-all', 'run-s', 'run-p'],
+    'lint-staged': ['lint-staged'],
+    husky: ['husky'],
+    webpack: ['webpack'],
+    'webpack-cli': ['webpack'],
+    'webpack-dev-server': ['webpack-dev-server', 'webpack serve'],
+    rollup: ['rollup'],
+    esbuild: ['esbuild'],
+    vite: ['vite'],
+    '@playwright/test': ['playwright'],
+    '@changesets/cli': ['changeset'],
+    '@angular/cli': ['ng'],
+    '@nestjs/cli': ['nest'],
+    '@vue/cli-service': ['vue-cli-service'],
+    '@storybook/cli': ['storybook', 'sb'],
+    'postcss-cli': ['postcss'],
+    'sass-embedded': ['sass'],
+    'tailwindcss': ['tailwindcss'],
+    'drizzle-kit': ['drizzle-kit'],
+    'drizzle-orm': [],
+    prisma: ['prisma'],
+    knip: ['knip'],
+    madge: ['madge'],
+    typedoc: ['typedoc'],
+    stylelint: ['stylelint'],
+    nx: ['nx'],
+    lerna: ['lerna'],
+    wrangler: ['wrangler'],
+    vercel: ['vercel'],
+    'wait-on': ['wait-on'],
+    'http-server': ['http-server'],
+    serve: ['serve'],
+    'ts-jest': [],
+    'size-limit': ['size-limit'],
+    'tsc-alias': ['tsc-alias'],
+    'ts-patch': ['tspc', 'ts-patch']
+};
+
 /** Executable names a package installs, from its manifest's `bin` field (a bare string means "named after the package"). */
 export function binNamesOf(searchRoots: string[], name: string): string[] {
     const manifest = readManifest(searchRoots, name);
@@ -197,7 +273,8 @@ export function binNamesOf(searchRoots: string[], name: string): string[] {
     // the executable is named after the package (`@biomejs/biome` → `biome`, `prettier` → `prettier`).
     if (!manifest) {
         const unscoped = name.startsWith('@') ? name.split('/')[1] ?? '' : name;
-        return unscoped ? [unscoped, unscoped.replace(/-cli$/, '')].filter((candidate, index, all) => candidate.length >= 3 && all.indexOf(candidate) === index) : [];
+        const conventional = unscoped ? [unscoped, unscoped.replace(/-cli$/, '')] : [];
+        return [...(KNOWN_COMMANDS[name] ?? []), ...conventional].filter((candidate, index, all) => candidate.length >= 3 && all.indexOf(candidate) === index);
     }
     const bin = manifest.bin;
     if (!bin) return [];
@@ -239,6 +316,16 @@ export function collectNonImportUsage(input: DependencyUsageInput): Set<string> 
     for (const file of candidateFiles) {
         const base = path.basename(file);
 
+        for (const { extension, packages } of PREPROCESSORS) {
+            if (extension.test(base)) for (const name of packages) if (declared.has(name)) used.add(name);
+        }
+        // `import { Tweet } from 'react-tweet'` at the top of an MDX document is a use of the package.
+        if (/\.mdx?$/i.test(base)) {
+            const text = readFileSafe(file);
+            if (text && text.length <= MAX_CONFIG_BYTES && text.includes('import')) for (const specifier of mdxImportSpecifiers(text)) addIfDeclared(specifier, declared, used);
+            continue;
+        }
+
         if (STYLE_FILE.test(base)) {
             for (const match of readFileSafe(file).matchAll(STYLE_IMPORT)) addIfDeclared(match[1], declared, used);
             continue;
@@ -256,6 +343,7 @@ export function collectNonImportUsage(input: DependencyUsageInput): Set<string> 
 
         const text = readFileSafe(file);
         if (!text || text.length > MAX_CONFIG_BYTES) continue;
+        addNodeModulesPaths(text, declared, used);
         // JS configs list plugins as quoted strings/keys; data files (YAML lists, TOML) also use bare words.
         const tokens = isDataConfig ? wordTokens(text) : quotedTokens(text);
         for (const token of tokens) addIfDeclared(token, declared, used);
@@ -293,6 +381,7 @@ export function collectNonImportUsage(input: DependencyUsageInput): Set<string> 
         for (const file of input.sourceFiles ?? []) {
             if (unresolved.every((name) => used.has(name))) break;
             const text = readFileSafe(file);
+            if (text.includes('node_modules')) addNodeModulesPaths(text, declared, used);
             for (const name of unresolved) {
                 if (used.has(name)) continue;
                 if (text.includes(`'${name}`) || text.includes(`"${name}`) || text.includes(`\`${name}`)) {
@@ -317,6 +406,13 @@ export function collectNonImportUsage(input: DependencyUsageInput): Set<string> 
                 }
             }
         }
+    }
+
+    // A scoped package named after a tool is that tool's plugin or adapter (`@size-limit/file` for `size-limit`): the tool loads it itself.
+    for (const dependency of declared) {
+        if (used.has(dependency) || !dependency.startsWith('@')) continue;
+        const scope = dependency.slice(1).split('/')[0];
+        if (scope !== dependency.slice(1) && declared.has(scope) && (used.has(scope) || input.usedViaImports.has(scope))) used.add(dependency);
     }
 
     // Peer dependencies of anything in use are required by that package at runtime, transitively

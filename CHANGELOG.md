@@ -6,6 +6,169 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Found by validating on real repositories** (zod, hono, trpc, excalidraw,
+  nest, date-fns and OWASP Juice Shop):
+  - Vendored code (`vendor/`, `third_party/`, scripts under `assets/`) is not
+    judged as the project's own code or scored.
+  - A directory named as the start of a path built at runtime inside a
+    filesystem call (`readFile('./data/snippets/' + key + '.ts')`) is treated
+    as referenced, so its files are not reported as unused.
+  - Docusaurus `@site/...` imports resolve to the site package.
+  - **DEP001** counts packages referenced by a `node_modules/<pkg>` path (Angular
+    styles, copy scripts), imported at the top of an MDX document, or implied by
+    file types (`sass` with `.scss`, `less`, `stylus`); `tslib` is implied by
+    Angular; a scoped plugin (`@size-limit/file`) is used when its tool is.
+  - **SEC001** no longer treats a sentence used as a JSON key, non-ASCII prose,
+    or a hyphenated translated label as a credential, and ignores the
+    search-only key of an Algolia DocSearch config.
+- The benchmark gains `bench:report` and a generated
+  [bench/ACCURACY.md](bench/ACCURACY.md) (B6), 56 hand-assigned labels for 11
+  rules, and a separate baseline for corpus runs (`baseline.corpus.json`); CI
+  still gates on the seeded repo only.
+
+- **Output you can trust** (#8: O1-O6).
+  - The default output lists only HIGH/CERTAIN-confidence findings from rules
+    that measured at least 85% accuracy (security findings at MEDIUM
+    confidence stay visible). `--all` lists everything; `--audit` also lists
+    findings in tests, examples and fixtures. The scan says how many findings
+    were hidden (O1).
+  - A single rule's cost to a category grows logarithmically past 2 points, so
+    one noisy rule no longer dominates (O2).
+  - The headline score counts shipped code only; findings in tests, examples,
+    benchmarks and fixtures are not scored (O3).
+  - The three rules that cost the most points are listed with their cost, in
+    the terminal, Markdown and JSON (`scoreDrains`) (O4).
+  - Import cycles show the whole chain with the importing line of each file:
+    `a.ts:12 → b.ts:3 → a.ts` (O5).
+  - Finding ids are fingerprints of rule, file and normalized code, not line
+    numbers, so they survive refactors (O6).
+
+- **Per-rule false positives** (#8: R1-R4).
+  - **ERR003** ignores calls typed `void | Promise<void>` and `Object.assign`
+    decorators, and reports a promise started inside a React effect or an
+    `on*` handler at `LOW` confidence (R1).
+  - **JS002** allows `typeof x != "undefined"` and `x == undefined`/`void 0`,
+    like `== null` (R2).
+  - Generated files are also detected by shape: average line over 200
+    characters, Emscripten glue, or a `/*!` banner above long-line bundles (R3).
+  - **DUP001** reports one finding per cluster of duplicated code instead of one
+    per pair, skips `locale/`, `i18n/` and `fixtures/` directories, and ignores
+    windows that are mostly literals or have almost no logic (R4).
+
+- **Unused files and exports** (#8: F1-F8).
+  - **DEAD010/DEAD009** resolve workspace packages by name even when
+    `node_modules` links are missing: `@scope/pkg`, `@scope/pkg/sub.js`
+    (through the package's `exports` map or layout), dynamic `import()` and
+    `require.resolve()` (F1).
+  - `import` lines in `.md` and `.mdx` files count as uses, including
+    Docusaurus `@site/...` paths; an import inside a code fence does not (F2).
+  - Framework entry conventions: Docusaurus (`src/theme`, `src/pages`,
+    `src/clientModules`, `src/plugins`, `static`, `sidebars`), NestJS `main.ts`
+    and service workers (F3).
+  - Files that only re-export (barrels) are not reported as unused (F4).
+  - Files in a published package (not private, with `exports` or `files`) are
+    reported at `LOW` confidence and the finding says so (F5).
+  - Wildcard `exports` patterns such as `"./*": "./dist/*.js"` make the matching
+    sources public API (F6). Packages without `main`/`exports`/`bin` treat
+    `src/index.*` and `main.*` as entry points (F7).
+  - Unused-file findings list the checks the file failed (F8).
+
+- **Dependency rules** (#8: D1-D4, R5).
+  - **DEP001** knows the executables of common tools (`typescript` → `tsc`,
+    Biome, Vitest, ESLint, Prettier, tsx, tsup, turbo, rimraf, ...) when
+    `node_modules` and the lockfile cannot say, so a fresh checkout no longer
+    reports them as unused (D1). `tslib` with `importHelpers` was already
+    honored; a regression test now covers it (D2).
+  - **DEP002** skips framework virtual modules, but only when the framework is
+    declared: Docusaurus (`@theme/*`, `@theme-original/*`, `@site/*`,
+    `@generated/*`, `@docusaurus/*`) and SvelteKit (`$app/*`, `$lib/*`, ...) (D3).
+    It also honors aliases from Vite/webpack/Rollup `resolve.alias`, Jest
+    `moduleNameMapper` and Babel `module-resolver`, next to tsconfig `paths`
+    (D4).
+  - When dependencies are not installed (no `node_modules`, or most imported
+    packages cannot be resolved), `TS001` and `ERR003` are reported at `LOW`
+    confidence and the scan shows a warning (`coverage.warnings` in JSON) (R5).
+
+- **SEC001 secret detection reworked** (#8: S1-S6, G2-G4). Moved to
+  `src/rules/secrets.ts`.
+  - In TS/JS the name-based check reads string literals from the syntax tree, so
+    comments are never flagged, and names must *end* in a credential word
+    (`dbPassword`, `API_KEY`; not `tokenizer` or `passwordHash`).
+  - JSON files are parsed and only values are judged; keys and
+    `dependencies`/`author`/`contributors` metadata are skipped. In YAML, .env
+    and TOML only the value is judged, so `authMiddleware: handler` is no
+    longer a secret.
+  - A value must be one token (no spaces), mix character types and not look
+    like code; passwords need three character types.
+  - Public-by-design keys (Firebase web keys, Stripe `pk_`, anon JWTs) and
+    sample credentials in tests, fixtures and docs are reported as `INFO`.
+    `INFO` findings are shown but no longer cost any points. Live-looking keys
+    (AWS `AKIA`, `sk_live_`, valid GitHub tokens) stay at full severity in
+    tests.
+  - `ghp_`/`gho_`/... tokens are checked against GitHub's CRC32 checksum; a
+    string that fails it is reported at `LOW` confidence.
+- **SEC007** also flags `rejectUnauthorized: false`, `strictSSL: false`,
+  `insecure: true` and a no-op `checkServerIdentity` (G1).
+- **SEC008** also checks `raw`, `$queryRawUnsafe` and `$executeRawUnsafe`
+  (plus `pool.query`, `client.query`, `knex.raw`, `sequelize.query`), and
+  follows a query built into a variable before it is passed in (G5, G6).
+
+### Added
+
+- **Taint tracking** (#8: T1-T3). Request inputs (Express, Koa, Hono, Next,
+  NestJS parameter decorators, `process.argv`) are followed through variables,
+  templates, destructuring, helper functions and across files to command
+  execution, `eval`, filesystem paths, SQL, `fetch`/`axios`, redirects,
+  `new RegExp` and prototype pollution. Known cleaning steps (numeric parsing,
+  schema validation, `path.basename`, escapers, allowlist and containment checks
+  that exit early) stop a flow per sink kind. Four new rules: `SEC011`
+  prototype pollution, `SEC012` open redirect, `SEC013` SSRF and `SEC014`
+  regular expressions built from request data. Where a pattern-based finding
+  and a flow agree, one finding remains at high confidence; where the flow
+  shows the value was cleaned, the pattern finding is dropped.
+
+- **Adoption features** (#8: A1-A5).
+  - `devkit scan --since <ref>` lists only findings on lines changed since a
+    git ref (new files count in full). The score still covers the whole
+    repository (A1).
+  - `devkit fix --write` applies safe fixes: unused imports (exactly the
+    bindings the compiler reports), `console.log`/`console.debug`/`debugger`
+    statements, and provably safe `var` to `const`/`let`. Each file is
+    re-checked and left alone if a fix would add a compile error. Without
+    `--write` it previews the same plan (A2).
+  - `devkit doctor` reports installed dependencies, the active tsconfig,
+    workspaces, frameworks, entry points and unresolved imports; the same facts
+    appear as a "Project" line in the scan header and in `environment` in JSON
+    (A3).
+  - `devkit init --interactive` proposes ignores from detected frameworks
+    (build output) and the directories with the most findings, and writes
+    `.devkitrc.json` without discarding existing settings (A4).
+  - `devkit scan --with gitleaks,knip` merges those tools' findings into the
+    score and SARIF output when they are installed. SARIF results now carry a
+    `partialFingerprints` entry built from the stable finding id (A5).
+
+- Secret formats: Google, OpenAI, Anthropic, GitLab, npm, SendGrid, Twilio and
+  Azure storage keys, Stripe publishable keys (INFO) and database URLs with an
+  embedded password (G3).
+
+- **Benchmark harness** (`bench/`, part of #8): a measurable accuracy baseline
+  that later rule changes are judged against.
+  - `bench/seeded/` is a small repo with 20 planted security/quality issues and
+    9 known-clean decoys, each tagged with the rule expected to catch (or leave
+    alone) the code. Three planted issues (G1, G2, G6) and one decoy (R2) are
+    recorded as known gaps rather than hidden.
+  - `npm run bench` reports the planted-issue catch rate and per-rule accuracy
+    (Markdown to stdout; `--json <file>` for structured output).
+  - `npm run bench:check` is the CI gate: it fails when a planted issue is
+    missed or any rule's accuracy drops more than 2 points below
+    `bench/baseline.json`.
+  - `bench/corpus.json` pins zod, hono, trpc, excalidraw, nest and date-fns to
+    fixed commits; `npm run bench:corpus` clones and scans them, and
+    `npm run bench:sample` draws a reproducible sample of findings to label by
+    hand into `bench/labels/*.jsonl`.
+
 ### Fixed
 
 False-positive reduction, validated by scanning 11 open-source repositories

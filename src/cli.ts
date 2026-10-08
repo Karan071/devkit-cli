@@ -5,8 +5,14 @@ import path from 'node:path';
 import { Command } from 'commander';
 import { writeConfig } from './config';
 import { getRuleById, listRules } from './rules';
-import { formatBaselineCompare, formatJson, formatMarkdown, formatMetrics, formatSarif, formatTerminal } from './reporters';
-import { scanRepository } from './scanner';
+import { formatBaselineCompare, formatDoctor, formatJson, formatMarkdown, formatMetrics, formatSarif, formatTerminal } from './reporters';
+import { scanRepository, type ScanOptions as ScanEngineOptions } from './scanner';
+import { isShownByDefault } from './ruleQuality';
+import { changedLinesSince, filterToChanged } from './since';
+import { runInteractiveInit } from './initInteractive';
+import { planFixes, writeFixes } from './fixes';
+import { parseAdapterList, type AdapterName } from './adapters';
+import readline from 'node:readline/promises';
 import { ProgressRenderer, color, pad, severityColor } from './terminal';
 import { determineExitFailure, filterFindings, validateGates } from './cliLogic';
 import type { ScanSummary } from './types';
@@ -19,10 +25,10 @@ function resolveTarget(target: string | undefined): string {
     return root;
 }
 
-function scanWithProgress(root: string): ScanSummary {
+function scanWithProgress(root: string, engineOptions: ScanEngineOptions = {}): ScanSummary {
     const progress = new ProgressRenderer();
     try {
-        const summary = scanRepository(root, (update) => progress.update(update));
+        const summary = scanRepository(root, (update) => progress.update(update), engineOptions);
         const coverage = summary.coverage;
         progress.finish(coverage ? `Scanned ${coverage.analyzedFiles} source files + ${coverage.textFilesScanned} other files` : 'Scan complete');
         return summary;
@@ -38,10 +44,37 @@ program.name('devkit').description('Deterministic repository-quality scanner for
 
 program
     .command('init')
-    .description('Create a default DevKit config file in the current project')
-    .action(() => {
-        const configPath = writeConfig(process.cwd());
-        console.log(`Created config at ${configPath}`);
+    .description('Create a DevKit config file in the current project')
+    .option('-i, --interactive', 'Scan the project and propose ignores based on its frameworks and its noisiest directories')
+    .option('-y, --yes', 'With --interactive: accept framework build-output ignores without asking')
+    .action(async (options: { interactive?: boolean; yes?: boolean }) => {
+        if (!options.interactive) {
+            const configPath = writeConfig(process.cwd());
+            console.log(`Created config at ${configPath}`);
+            return;
+        }
+        if (!process.stdin.isTTY && !options.yes) {
+            console.error('init --interactive needs a terminal to ask questions. Use --yes to accept the framework ignores without asking.');
+            process.exitCode = 1;
+            return;
+        }
+        const root = process.cwd();
+        const summary = scanWithProgress(root);
+        const terminal = options.yes && !process.stdin.isTTY ? null : readline.createInterface({ input: process.stdin, output: process.stdout });
+        try {
+            const result = await runInteractiveInit(
+                root,
+                summary,
+                async (question, defaultYes) => {
+                    const answer = (await terminal!.question(`${question} [${defaultYes ? 'Y/n' : 'y/N'}] `)).trim().toLowerCase();
+                    return answer === '' ? defaultYes : answer.startsWith('y');
+                },
+                { assumeYes: options.yes, log: (line) => console.log(line) }
+            );
+            console.log(`Wrote ${result.configPath} (${result.accepted.length} ignore${result.accepted.length === 1 ? '' : 's'} added)`);
+        } finally {
+            terminal?.close();
+        }
     });
 
 interface ScanOptions {
@@ -51,6 +84,10 @@ interface ScanOptions {
     severity?: string;
     minScore?: string;
     failOn?: string;
+    all?: boolean;
+    audit?: boolean;
+    since?: string;
+    with?: string;
 }
 
 const OUTPUT_FORMATS = ['terminal', 'json', 'markdown', 'sarif'];
@@ -67,12 +104,39 @@ function runScan(target: string | undefined, options: ScanOptions): boolean {
         return true;
     }
 
-    const summary = scanWithProgress(resolveTarget(target));
+    const root = resolveTarget(target);
+    // Resolve the ref first: a typo should fail in a moment, not after a full scan.
+    let changed: ReturnType<typeof changedLinesSince> | null = null;
+    if (options.since) {
+        try {
+            changed = changedLinesSince(root, options.since);
+        } catch (error) {
+            console.error(`--since ${options.since}: ${error instanceof Error ? error.message : String(error)}`);
+            return true;
+        }
+    }
 
-    // Filters narrow the findings that are displayed; scores always describe the whole repository,
-    // so `--category security --min-score 8` still gates on the real overall score.
-    const filteredFindings = filterFindings(summary.findings, options);
-    const filteredSummary = { ...summary, findings: filteredFindings };
+    let adapters: AdapterName[] = [];
+    if (options.with) {
+        try {
+            adapters = parseAdapterList(options.with);
+        } catch (error) {
+            console.error(error instanceof Error ? error.message : String(error));
+            return true;
+        }
+    }
+
+    // --audit also lists findings in tests, examples, benchmarks and fixtures (the score still ignores them).
+    const summary = scanWithProgress(root, { ...(options.audit ? { includeNonProduction: true } : {}), adapters });
+
+    // By default only findings worth acting on are listed; --all and --audit list everything. --since keeps the
+    // findings on changed lines. Filters narrow the findings that are displayed; scores always describe the whole
+    // repository, so `--category security --min-score 8` still gates on the real overall score.
+    const showEverything = !!(options.all || options.audit);
+    const candidates = changed ? filterToChanged(summary.findings, changed) : summary.findings;
+    const listed = showEverything ? candidates : candidates.filter(isShownByDefault);
+    const filteredFindings = filterFindings(listed, options);
+    const filteredSummary = { ...summary, findings: filteredFindings, hiddenByDefault: candidates.length - listed.length };
     if ((options.category || options.severity) && filteredFindings.length === 0 && summary.findings.length > 0 && outputType === 'terminal') {
         console.error(color.yellow(`No findings match the filter. Categories: ${[...new Set(summary.findings.map((finding) => finding.category))].join(', ')}`));
     }
@@ -100,10 +164,21 @@ program
     .option('--severity <level>', 'Show only one severity (critical, high, medium, low, info)')
     .option('--min-score <score>', 'Fail with exit code 1 when the overall score falls below this threshold')
     .option('--fail-on <severity>', 'Fail with exit code 1 when any shown finding is at or above this severity')
+    .option('--since <ref>', 'List only findings on lines changed since this git ref (e.g. origin/main); the score still covers the whole repository')
+    .option('--with <tools>', 'Also run external tools when installed and merge their findings into the score and SARIF output: gitleaks, knip (comma-separated)')
+    .option('--all', 'List every finding, including low-confidence ones and rules with low measured accuracy')
+    .option('--audit', 'Like --all, and also list findings in tests, examples, benchmarks and fixtures')
     .action((target: string | undefined, options: ScanOptions) => {
         if (runScan(target, options)) {
             process.exitCode = 1;
         }
+    });
+
+program
+    .command('doctor [path]')
+    .description('Check how well the project can be analyzed: installed dependencies, tsconfig, workspaces, frameworks, entry points, unresolved imports')
+    .action((target: string | undefined) => {
+        console.log(formatDoctor(scanWithProgress(resolveTarget(target))));
     });
 
 program
@@ -202,20 +277,29 @@ program
 
 program
     .command('fix [path]')
-    .description('Preview findings marked as safe to fix')
-    .action((target: string | undefined) => {
-        const summary = scanWithProgress(resolveTarget(target));
-        // "Safe" needs the rule to offer a fix AND enough confidence that nothing else depends on the target.
-        const safeFixes = summary.findings.filter((finding) => finding.fixAvailable && (finding.confidence === 'CERTAIN' || finding.confidence === 'HIGH'));
+    .description('Preview, or with --write apply, the safe mechanical fixes: unused imports, console.log/debug statements, var declarations')
+    .option('--write', 'Edit files in place. Each file is re-checked and left alone if a fix would add a compile error')
+    .action((target: string | undefined, options: { write?: boolean }) => {
+        const root = resolveTarget(target);
+        const summary = scanWithProgress(root);
+        const plan = planFixes(root, summary.findings);
 
-        console.log('Safe fix preview');
-        if (safeFixes.length === 0) {
+        console.log(options.write ? 'Applying safe fixes' : 'Safe fix preview');
+        if (plan.files.length === 0) {
             console.log('No auto-fixable findings were detected.');
-            return;
         }
+        for (const file of plan.files) {
+            console.log(`${file.relativePath}`);
+            for (const fix of file.fixes) console.log(`  ${fix.ruleId}  line ${fix.line}: ${fix.description}`);
+        }
+        for (const skipped of plan.skipped) console.log(color.dim(`skipped ${skipped.relativePath}: ${skipped.reason}`));
 
-        for (const fix of safeFixes.slice(0, 10)) {
-            console.log(`- ${fix.ruleId}: ${fix.file}:${fix.line} - ${fix.message}`);
+        const count = plan.files.reduce((total, file) => total + file.fixes.length, 0);
+        if (options.write) {
+            writeFixes(plan);
+            console.log(`Fixed ${count} finding${count === 1 ? '' : 's'} in ${plan.files.length} file${plan.files.length === 1 ? '' : 's'}. Review the diff and run your tests.`);
+        } else if (count > 0) {
+            console.log(color.dim(`${count} fix${count === 1 ? '' : 'es'} in ${plan.files.length} file${plan.files.length === 1 ? '' : 's'}. Run "devkit fix --write" to apply them.`));
         }
     });
 

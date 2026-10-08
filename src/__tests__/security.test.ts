@@ -120,7 +120,7 @@ describe('secret scan beyond JS/TS files', () => {
     it('finds credentials in YAML, JSON and .env files', () => {
         fixture = makeFixture({
             'src/index.ts': 'export const a = 1;',
-            'config/settings.yaml': 'stripe_key: sk_live_abcdefghijklmnop1234',
+            'config/settings.yaml': `stripe_key: ${'sk_' + 'live_abcdefghijklmnop1234'}`,
             'config/creds.json': '{"token":"ghp_abcdefghijklmnopqrstuvwxyz1234567890"}',
             'deploy/.env.production': 'DATABASE_PASSWORD=Zk8#qP2!vR9xLm4Tq7Wn'
         });

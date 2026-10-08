@@ -379,7 +379,7 @@ export const rules: RuleDefinition[] = [
         severity: 'HIGH',
         confidence: 'HIGH',
         description: 'Potential secret material appears directly in source code.',
-        explanation: 'Recognizes common provider token formats and high-entropy values assigned to credential-like variable names.',
+        explanation: 'Recognizes provider token formats (AWS, GitHub with checksum validation, Stripe, Google, OpenAI, Anthropic, GitLab, npm, SendGrid, Twilio, Azure, database URLs) and strong values in string literals assigned to credential-like names. Only values are judged: comments, keys, dependency and author metadata are ignored. Public-by-design keys and sample credentials in tests and docs are INFO and cost no points.',
         example: 'const apiKey = "sk_live_123"',
         why: 'Secrets in code create immediate security and operational risk.',
         fixClassification: 'manual'
@@ -438,8 +438,8 @@ export const rules: RuleDefinition[] = [
         category: 'security',
         severity: 'HIGH',
         confidence: 'HIGH',
-        description: 'NODE_TLS_REJECT_UNAUTHORIZED is set to 0.',
-        explanation: 'Detected via text scanning for the environment variable assignment.',
+        description: 'Certificate verification is switched off: the NODE_TLS' + '_REJECT_UNAUTHORIZED environment variable set to 0, rejectUnauthorized: false, strictSSL: false, insecure: true, or a no-op checkServerIdentity.',
+        explanation: 'The environment variable is found by text scan; the options are found in the syntax tree.',
         example: 'process.env.NODE_TLS' + '_REJECT_UNAUTHORIZED = "0"',
         why: 'Disabling TLS verification exposes the process to man-in-the-middle attacks.',
         fixClassification: 'manual'
@@ -451,7 +451,7 @@ export const rules: RuleDefinition[] = [
         severity: 'HIGH',
         confidence: 'MEDIUM',
         description: 'A SQL query string is dynamically constructed.',
-        explanation: 'Concatenating input into query syntax can allow an attacker to alter the query.',
+        explanation: 'Concatenating input into query syntax can allow an attacker to alter the query. Checked on query/execute/raw and the Prisma $queryRawUnsafe/$executeRawUnsafe calls, including a query built into a variable first.',
         example: 'db.query(`SELECT * FROM users WHERE id = ${id}`);',
         why: 'Parameterized queries keep data separate from executable SQL.',
         fixClassification: 'manual'
@@ -482,6 +482,54 @@ export const rules: RuleDefinition[] = [
     },
 
     // Architecture
+    {
+        id: 'SEC011',
+        title: 'Prototype pollution',
+        category: 'security',
+        severity: 'MEDIUM',
+        confidence: 'MEDIUM',
+        description: 'Request-controlled keys or objects are written into an object without blocking "__proto__".',
+        explanation: 'Found by taint tracking: a nested write like target[a][b] = value where a key comes from the request, or request data merged with lodash merge/defaultsDeep/set or deepmerge. Skipped when the file guards against __proto__ or builds the target with Object.create(null).',
+        example: 'target[req.body.group][req.body.key] = req.body.value',
+        why: 'Setting "__proto__" changes the prototype shared by every object, which can turn into denial of service or remote code execution.',
+        fixClassification: 'manual'
+    },
+    {
+        id: 'SEC012',
+        title: 'Open redirect',
+        category: 'security',
+        severity: 'MEDIUM',
+        confidence: 'HIGH',
+        description: 'Request-controlled data decides where the user is redirected.',
+        explanation: 'Found by taint tracking into res.redirect/c.redirect/NextResponse.redirect/redirect() and Location headers. Only a value whose first part is tainted counts, and a check such as startsWith("/") plus !startsWith("//"), an allowlist or a new URL(x).origin comparison clears it.',
+        example: 'res.redirect(req.query.next)',
+        why: 'Attackers send victims a trusted-looking link that lands on a phishing site.',
+        fixClassification: 'manual'
+    },
+    {
+        id: 'SEC013',
+        title: 'Server-side request forgery',
+        category: 'security',
+        severity: 'HIGH',
+        confidence: 'HIGH',
+        description: 'Request-controlled data decides which URL the server fetches.',
+        explanation: 'Found by taint tracking into fetch, axios, got, ky, needle, superagent, undici and http(s).get/request. Only a URL whose first part is tainted counts: a tainted path segment under a fixed base is not reported.',
+        example: 'fetch(req.query.url)',
+        why: 'The server can be made to call internal services, cloud metadata endpoints or other hosts the attacker cannot reach directly.',
+        fixClassification: 'manual'
+    },
+    {
+        id: 'SEC014',
+        title: 'Regular expression built from request data',
+        category: 'security',
+        severity: 'MEDIUM',
+        confidence: 'MEDIUM',
+        description: 'Request-controlled data becomes a regular expression.',
+        explanation: 'Found by taint tracking into new RegExp(x) and RegExp(x). Escaping with escapeRegExp or a .replace(/[.*+?^${}()|[\\]\\\\]/g, ...) call clears it.',
+        example: 'new RegExp(req.query.search)',
+        why: 'A crafted pattern can match more than intended or hang the process with catastrophic backtracking.',
+        fixClassification: 'manual'
+    },
     {
         id: 'ARCH001',
         title: 'Forbidden layer import',

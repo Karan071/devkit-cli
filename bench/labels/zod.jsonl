@@ -1,0 +1,5 @@
+{"repo": "zod", "rule": "DEAD009", "file": "packages/zod/src/v4/core/zsf.ts", "line": 96, "verdict": true, "reason": "real issue"}
+{"repo": "zod", "rule": "DEAD009", "file": "packages/zod/src/v4/core/zsf.ts", "line": 35, "verdict": true, "reason": "real issue"}
+{"repo": "zod", "rule": "DEP001", "file": "package.json", "line": 21, "verdict": true, "reason": "real issue"}
+{"repo": "zod", "rule": "DEAD010", "file": "packages/treeshake/zod-boolean.ts", "line": 1, "verdict": false, "reason": "esbuild entry point listed by mm.mjs / bundle-size.test.ts"}
+{"repo": "zod", "rule": "DEAD010", "file": "packages/zod/src/v4/core/zsf.ts", "line": 1, "verdict": true, "reason": "spec types nothing references"}

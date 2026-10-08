@@ -13,6 +13,18 @@ function isNullLiteral(node: ts.Node): boolean {
 }
 
 /**
+ * Comparisons where `==` and `===` cannot differ, so the loose form is an idiom and not a bug:
+ * `typeof x != "undefined"` (a typeof result is always a string), and `x == undefined` / `x == void 0`, which
+ * is the same null-or-undefined check as `x == null`.
+ */
+function isCoercionFreeComparison(node: ts.BinaryExpression): boolean {
+    const isTypeof = (expression: ts.Expression): boolean => ts.isTypeOfExpression(expression);
+    const isUndefined = (expression: ts.Expression): boolean =>
+        (ts.isIdentifier(expression) && expression.text === 'undefined') || ts.isVoidExpression(expression);
+    return isTypeof(node.left) || isTypeof(node.right) || isUndefined(node.left) || isUndefined(node.right);
+}
+
+/**
  * A codebase written almost entirely with `var` (Express, most pre-2015 libraries) made that choice as a
  * style; flagging each declaration buries the real signal. Only a clear, large-scale majority counts -
  * a few `var`s in an otherwise modern project are still worth a finding.
@@ -76,7 +88,8 @@ export function runJavaScriptRules(context: RuleContext): Finding[] {
                 ts.isBinaryExpression(node) &&
                 LOOSE_EQUALITY_OPERATORS.has(node.operatorToken.kind) &&
                 !isNullLiteral(node.left) &&
-                !isNullLiteral(node.right)
+                !isNullLiteral(node.right) &&
+                !isCoercionFreeComparison(node)
             ) {
                 const { line, column } = lineAndColumn(sourceFile, node.getStart());
                 findings.push(

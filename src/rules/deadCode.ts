@@ -6,6 +6,7 @@ import { buildFinding } from '../finding';
 import { isRuleEnabled } from '../config';
 import { isTestFile } from '../discovery';
 import { findNodeAtPosition, isStatementContainer, lineAndColumn } from '../ast/walk';
+import { isInPublishedPackage } from '../moduleGraph';
 
 const UNUSED_DIAGNOSTIC_CODES = new Set([6133, 6192, 6196, 6198]);
 
@@ -218,6 +219,7 @@ function detectUnusedExports(context: RuleContext): Finding[] {
 
         const used = usedExportsByFile.get(file) ?? new Set<string>();
         const dynamicHint = hasDynamicRequireHint(context, relativePath);
+        const published = isInPublishedPackage(moduleGraph, file);
 
         for (const exportInfo of exports) {
             if (used.has(exportInfo.name)) {
@@ -229,12 +231,12 @@ function detectUnusedExports(context: RuleContext): Finding[] {
                     ruleId: 'DEAD009',
                     category: 'deadCode',
                     severity: 'MEDIUM',
-                    confidence: dynamicHint ? 'LOW' : 'MEDIUM',
+                    confidence: dynamicHint || published ? 'LOW' : 'MEDIUM',
                     file: relativePath,
                     line: exportInfo.line,
                     column: 1,
                     message: 'Unused export',
-                    description: `Export "${exportInfo.name}" is not imported by any other file in the project.${dynamicHint ? ' A nearby dynamic require/import could not be resolved, so verify this manually.' : ''}`,
+                    description: `Export "${exportInfo.name}" is not imported by any other file in the project.${dynamicHint ? ' A nearby dynamic require/import could not be resolved, so verify this manually.' : ''}${published ? PUBLISHED_NOTE : ''}`,
                     evidence: exportInfo.name,
                     suggestion: 'Remove the export or confirm it is part of a public API consumed outside this repository.',
                     fixAvailable: false
@@ -244,6 +246,21 @@ function detectUnusedExports(context: RuleContext): Finding[] {
     }
 
     return findings;
+}
+
+const PUBLISHED_NOTE = ' It is in a published package (not private, with "exports" or "files"), so it may be consumed from outside this repository.';
+
+/** Why a file counts as unused, so the finding says which checks it failed rather than only that it failed. */
+function explainUnusedFile(context: RuleContext, file: string, published: boolean, dynamicHint: boolean): string {
+    const { moduleGraph } = context;
+    const reasons = ['No other file imports it'];
+    reasons.push(published ? 'it is not reachable from the package\'s "exports", "main" or "bin"' : 'it is not named by a package.json "main", "exports", "bin" or script');
+    reasons.push('no framework entry convention (Next.js, Docusaurus, NestJS, service worker) or tool config references it');
+    let text = `${reasons.join('; ')}.`;
+    if (moduleGraph.reExportAllTargets.get(file)?.size) text += ' It does re-export other modules.';
+    if (dynamicHint) text += ' A nearby dynamic require/import could not be resolved, so verify this manually.';
+    if (published) text += PUBLISHED_NOTE;
+    return text;
 }
 
 function detectUnusedFiles(context: RuleContext): Finding[] {
@@ -258,22 +275,25 @@ function detectUnusedFiles(context: RuleContext): Finding[] {
         const relativePath = path.relative(context.projectRoot, file).replace(/\\/g, '/');
         if (isTestFile(relativePath)) continue;
         if (moduleGraph.entryPoints.has(file)) continue;
+        // A barrel defines nothing: whether it is needed depends on what it forwards, and those files are judged on their own.
+        if (moduleGraph.barrelFiles.has(file)) continue;
 
         const incoming = moduleGraph.reverseEdges.get(file);
         if (incoming && incoming.size > 0) continue;
         const dynamicHint = hasDynamicRequireHint(context, relativePath);
+        const published = isInPublishedPackage(moduleGraph, file);
 
         findings.push(
             buildFinding({
                 ruleId: 'DEAD010',
                 category: 'deadCode',
                 severity: 'MEDIUM',
-                confidence: dynamicHint ? 'LOW' : 'MEDIUM',
+                confidence: dynamicHint || published ? 'LOW' : 'MEDIUM',
                 file: relativePath,
                 line: 1,
                 column: 1,
                 message: 'Unused file',
-                description: `This file is never imported by any other file and is not a configured entry point.${dynamicHint ? ' A nearby dynamic require/import could not be resolved, so verify this manually.' : ''}`,
+                description: explainUnusedFile(context, file, published, dynamicHint),
                 evidence: relativePath,
                 suggestion: 'Delete the file or wire it up as a reachable entry point.',
                 fixAvailable: false

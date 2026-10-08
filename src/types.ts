@@ -55,6 +55,31 @@ export interface RepoMetrics {
     testToSourceRatio: number;
 }
 
+/** What the scan found about the project it ran on: the facts that decide how far its findings can be trusted. */
+export interface Environment {
+    dependenciesInstalled: boolean;
+    packageManager: string | null;
+    /** Root tsconfig.json, when there is one. */
+    tsconfig: string | null;
+    /** Directories with their own tsconfig.json besides the root. */
+    nestedTsconfigs: number;
+    /** package.json files found, including the root. */
+    packages: number;
+    workspaceGlobs: string[];
+    frameworks: string[];
+    entryPoints: number;
+    unresolvedImports: number;
+    unresolvedSample: string[];
+}
+
+/** A rule's cost to the overall score. */
+export interface ScoreDrain {
+    ruleId: string;
+    category: string;
+    count: number;
+    pointsLost: number;
+}
+
 export interface ScanSummary {
     repository: string;
     score: number;
@@ -63,6 +88,11 @@ export interface ScanSummary {
     /** True when the overall score was capped because of a credible security finding. */
     securityCapped?: boolean;
     findings: Finding[];
+    /** The rules that cost the most points, largest first. */
+    scoreDrains?: ScoreDrain[];
+    /** Findings left out of the output by the default trust filter (see `--all`). */
+    hiddenByDefault?: number;
+    environment?: Environment;
     metrics: RepoMetrics;
     generatedFiles: string[];
     coverage?: ScanCoverage;
@@ -80,9 +110,13 @@ export interface ScanCoverage {
     generatedFilesSkipped: number;
     /** Findings hidden because the rule does not apply to tests, examples, benchmarks or fixtures. Use `scan.includeNonProduction` to show them. */
     nonProductionFindingsHidden: number;
+    /** Findings in tests, examples, benchmarks and fixtures. They are listed but do not count toward the headline score. */
+    nonProductionFindingsUnscored?: number;
     tooLargeFilesSkipped: string[];
     binaryFilesSkipped: number;
     /** File count per extension across all discovered files, e.g. `{ ".ts": 42, ".json": 6 }`. */
     languages: Record<string, number>;
     durationMs: number;
+    /** Conditions that make parts of this scan less reliable, e.g. dependencies not installed. */
+    warnings?: string[];
 }

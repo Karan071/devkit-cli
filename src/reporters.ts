@@ -1,5 +1,5 @@
-import { listRules } from './rules';
-import { SECURITY_CAP, summarizeHotspots, summarizeTopDeductions } from './scoring';
+import { getRuleById, listRules } from './rules';
+import { SECURITY_CAP, summarizeHotspots } from './scoring';
 import {
     color,
     formatDuration,
@@ -19,7 +19,7 @@ import {
     terminalWidth,
     truncateMiddle
 } from './terminal';
-import type { Confidence, Finding, ScanSummary, Severity } from './types';
+import type { Confidence, Environment, Finding, ScanSummary, Severity } from './types';
 
 const CATEGORY_LABELS: Record<string, string> = {
     deadCode: 'Dead Code',
@@ -53,6 +53,50 @@ function confidenceRank(confidence: Confidence): number {
 const MAX_DETAILED_FINDINGS = 6;
 const SEVERITIES = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO'] as const;
 
+const INSTALL_COMMAND: Record<string, string> = { pnpm: 'pnpm install', yarn: 'yarn install', npm: 'npm install', bun: 'bun install' };
+
+/** One line for the scan header: the project facts that decide how much to trust the findings. */
+function environmentLine(environment: Environment): string {
+    const parts = [
+        environment.dependenciesInstalled ? 'dependencies installed' : 'dependencies NOT installed',
+        environment.tsconfig ? `${environment.tsconfig}${environment.nestedTsconfigs > 0 ? ` +${environment.nestedTsconfigs} nested` : ''}` : 'no tsconfig.json',
+        plural(environment.packages, 'package'),
+        ...(environment.frameworks.length > 0 ? [environment.frameworks.slice(0, 4).join(', ')] : []),
+        `${plural(environment.entryPoints, 'entry point')}`,
+        `${environment.unresolvedImports} unresolved import${environment.unresolvedImports === 1 ? '' : 's'}`
+    ];
+    return parts.join(` ${glyph.bullet} `);
+}
+
+export function formatDoctor(summary: ScanSummary): string {
+    const environment = summary.environment;
+    const width = terminalWidth();
+    const lines: string[] = [...renderBox([`${color.bold(color.cyan('DevKit'))} ${color.dim(glyph.bullet)} ${color.bold('Project doctor')}`, color.dim(truncateMiddle(displayPath(summary.repository), width - 6))], width), ''];
+    if (!environment) return [...lines, '  No environment information was collected.', ''].join('\n');
+
+    const row = (label: string, status: string, detail = ''): void => { lines.push(`  ${color.dim(pad(label, 14))}${status}${detail ? `  ${color.dim(detail)}` : ''}`); };
+    const ok = (text: string) => color.green(`${glyph.check} ${text}`);
+    const warn = (text: string) => color.yellow(`${glyph.warn} ${text}`);
+    const install = INSTALL_COMMAND[environment.packageManager ?? 'npm'];
+
+    row('Dependencies', environment.dependenciesInstalled ? ok('installed') : warn('not installed'),
+        environment.dependenciesInstalled ? (environment.packageManager ?? '') : `run \`${install}\` first: type-based findings (TS001, ERR003) are unreliable without it`);
+    row('TypeScript', environment.tsconfig ? ok(environment.tsconfig) : warn('no root tsconfig.json'),
+        environment.tsconfig ? (environment.nestedTsconfigs > 0 ? `plus ${plural(environment.nestedTsconfigs, 'nested config')}` : '') : 'compiler defaults are assumed');
+    row('Packages', ok(String(environment.packages)), environment.workspaceGlobs.length > 0 ? `workspaces: ${environment.workspaceGlobs.join(', ')}` : environment.packages > 1 ? 'no workspace globs declared' : '');
+    row('Frameworks', environment.frameworks.length > 0 ? ok(environment.frameworks.join(', ')) : color.dim('none detected'));
+    row('Entry points', environment.entryPoints > 0 ? ok(String(environment.entryPoints)) : warn('none found'), environment.entryPoints > 0 ? '' : 'every file will look unused: set "main" or "exports" in package.json');
+    row('Imports', environment.unresolvedImports === 0 ? ok('all resolved') : warn(`${environment.unresolvedImports} unresolved`),
+        environment.unresolvedImports === 0 ? '' : `${environment.unresolvedSample.join(', ')}${environment.unresolvedImports > environment.unresolvedSample.length ? ', ...' : ''}`);
+    for (const warning of summary.coverage?.warnings ?? []) lines.push('', `  ${color.yellow(`${glyph.warn} ${warning}`)}`);
+    lines.push('');
+    return lines.join('\n');
+}
+
+function hiddenNote(count: number): string {
+    return `${plural(count, 'lower-confidence finding')} hidden. Run with --all to list them (--audit also includes tests and examples).`;
+}
+
 function plural(count: number, word: string): string {
     return `${count} ${word}${count === 1 ? '' : 's'}`;
 }
@@ -73,6 +117,14 @@ function renderScore(summary: ScanSummary, width: number): string[] {
     const scoreText = `${color.bold(scoreColor(summary.score, summary.score.toFixed(1)))}${color.dim(' / 10')}`;
     lines.push(`  ${scoreText}   ${color.dim('grade')} ${grade}  ${scoreColor(summary.score, scoreLabel(summary.score))}`);
     lines.push(`  ${renderScoreBar(summary.score, Math.min(48, width - 4))}`);
+    const drains = summary.scoreDrains ?? [];
+    if (drains.length > 0) {
+        lines.push(`  ${color.dim('Biggest score drains:')}`);
+        drains.forEach((drain, index) => {
+            const title = getRuleById(drain.ruleId)?.title ?? drain.ruleId;
+            lines.push(`  ${color.dim(`${index + 1}.`)} ${color.cyan(pad(drain.ruleId, 11))}${pad(truncateMiddle(title, 34), 36)}${color.red(`-${drain.pointsLost.toFixed(2)}`)} ${color.dim(`(${plural(drain.count, 'finding')})`)}`);
+        });
+    }
     if (summary.securityCapped) {
         lines.push(`  ${color.red(`${glyph.warn} Capped at ${SECURITY_CAP}`)} ${color.dim('— a high-confidence security finding outweighs code quality. Fix it first.')}`);
     }
@@ -103,6 +155,8 @@ function renderCoverage(summary: ScanSummary, width: number): string[] {
         .map(([extension, count]) => `${extension} ${color.dim(String(count))}`)
         .join(color.dim('  ·  '));
     if (languages) lines.push(`  ${color.dim('Files:')} ${languages}`);
+    if (summary.environment) lines.push(`  ${color.dim('Project:')} ${environmentLine(summary.environment)}`);
+    for (const warning of coverage.warnings ?? []) lines.push(`  ${color.yellow(`${glyph.warn} ${warning}`)}`);
     return lines;
 }
 
@@ -198,7 +252,11 @@ export function formatTerminal(summary: ScanSummary): string {
 
     if (summary.findings.length === 0) {
         lines.push('');
-        lines.push(`  ${color.green(`${glyph.check} No findings.`)} ${color.dim('The repository looks clean.')}`);
+        if ((summary.hiddenByDefault ?? 0) > 0) {
+            lines.push(`  ${color.green(`${glyph.check} No findings worth acting on.`)} ${color.dim(hiddenNote(summary.hiddenByDefault ?? 0))}`);
+        } else {
+            lines.push(`  ${color.green(`${glyph.check} No findings.`)} ${color.dim('The repository looks clean.')}`);
+        }
         lines.push('');
         return lines.join('\n');
     }
@@ -214,6 +272,7 @@ export function formatTerminal(summary: ScanSummary): string {
     if (remaining > 0) {
         lines.push(color.dim(`  ${plural(remaining, 'more finding')} not shown above.`));
     }
+    if ((summary.hiddenByDefault ?? 0) > 0) lines.push(color.dim(`  ${hiddenNote(summary.hiddenByDefault ?? 0)}`));
     const hint = (command: string, text: string) => `  ${color.cyan(pad(command, 32))}${color.dim(text)}`;
     lines.push(hint('devkit scan --category <name>', 'focus on one category (e.g. security, dead-code)'));
     lines.push(hint('devkit scan --format markdown', 'full report with every finding'));
@@ -238,6 +297,8 @@ export function formatMarkdown(summary: ScanSummary): string {
     if (summary.coverage) {
         const coverage = summary.coverage;
         lines.push(`- Coverage: ${coverage.discoveredFiles} files found, ${coverage.analyzedFiles} analyzed as JS/TS, ${coverage.textFilesScanned} other files secret-scanned, ${coverage.generatedFilesSkipped} generated skipped (${formatDuration(coverage.durationMs)})`);
+        if (summary.environment) lines.push(`- Project: ${environmentLine(summary.environment)}`);
+        for (const warning of coverage.warnings ?? []) lines.push(`- **Warning:** ${warning}`);
     }
     lines.push('');
 
@@ -253,15 +314,19 @@ export function formatMarkdown(summary: ScanSummary): string {
     }
 
     lines.push('');
-    lines.push('## Main deductions');
+    lines.push('## Biggest score drains');
     lines.push('');
-    const deductions = summarizeTopDeductions(summary.findings);
-    if (deductions.length === 0) {
+    const drains = summary.scoreDrains ?? [];
+    if (drains.length === 0) {
         lines.push('No deductions.');
     } else {
-        for (const deduction of deductions) {
-            lines.push(`- ${deduction.count} ${deduction.ruleId} finding(s) (${humanizeCategory(deduction.category)})`);
+        for (const drain of drains) {
+            lines.push(`- ${drain.ruleId} ${getRuleById(drain.ruleId)?.title ?? ''} (${humanizeCategory(drain.category)}): -${drain.pointsLost.toFixed(2)} points, ${drain.count} finding(s)`);
         }
+    }
+    if ((summary.hiddenByDefault ?? 0) > 0) {
+        lines.push('');
+        lines.push(`_${hiddenNote(summary.hiddenByDefault ?? 0)}_`);
     }
 
     lines.push('');
@@ -286,6 +351,8 @@ export function formatSarif(summary: ScanSummary): string {
         message: {
             text: finding.message
         },
+        // Stable across refactors (see finding ids), so code-scanning alerts are not closed and reopened by line shifts.
+        partialFingerprints: { 'devkit/v1': finding.id },
         locations: [
             {
                 physicalLocation: {
@@ -301,6 +368,13 @@ export function formatSarif(summary: ScanSummary): string {
         ]
     }));
 
+    const builtIn = new Set(listRules().map((rule) => rule.id));
+    const externalRules = [...new Set(summary.findings.map((finding) => finding.ruleId).filter((id) => !builtIn.has(id)))].map((id) => ({
+        id,
+        name: id,
+        shortDescription: { text: id.startsWith('GITLEAKS:') ? `gitleaks rule ${id.slice('GITLEAKS:'.length)}` : `knip ${id.slice('KNIP:'.length)}` },
+        properties: { category: summary.findings.find((finding) => finding.ruleId === id)?.category ?? 'external' }
+    }));
     const sarifRules = listRules().map((rule) => ({
         id: rule.id,
         name: rule.title,
@@ -323,7 +397,7 @@ export function formatSarif(summary: ScanSummary): string {
                     tool: {
                         driver: {
                             name: 'DevKit',
-                            rules: sarifRules
+                            rules: [...sarifRules, ...externalRules]
                         }
                     },
                     results

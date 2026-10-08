@@ -8,6 +8,8 @@ import { readFileSafe } from '../discovery';
 import { findImportCycles } from '../moduleGraph';
 import { loadTsConfigFor } from '../moduleResolution';
 import { classifyFile } from '../fileKind';
+import { loadBundlerAliases } from '../bundlerAliases';
+import { isFrameworkVirtualModule } from '../frameworkConventions';
 import { assessRemovalRisk, collectNonImportUsage, looksLikeToolExtension, packageNameFromSpecifier } from '../dependencyUsage';
 
 /** Files that run installed executables by name: CI workflows, git hooks, Makefiles, Dockerfiles, shell scripts. */
@@ -218,7 +220,8 @@ export function runDependencyRules(context: RuleContext): Finding[] {
             });
             // Compiler options that pull in a package without any import: `importHelpers` loads tslib, `jsxImportSource` the JSX runtime.
             const tsOptions = loadTsConfigFor(pkg.root)?.options;
-            if (tsOptions?.importHelpers) usedElsewhere.add('tslib');
+            // The Angular CLI turns on importHelpers for every build, so an Angular project needs tslib whatever its tsconfig says.
+            if (tsOptions?.importHelpers || [...pkg.declared].some((name) => name.startsWith('@angular/'))) usedElsewhere.add('tslib');
             if (tsOptions?.jsxImportSource) usedElsewhere.add(packageNameFromSpecifier(tsOptions.jsxImportSource));
             const mentionCandidates = packageTextFiles.filter((file) => path.basename(file) !== 'package.json' && !/\.(?:md|mdx|markdown|rst|txt|adoc)$/i.test(file));
 
@@ -268,6 +271,7 @@ export function runDependencyRules(context: RuleContext): Finding[] {
         const reported = new Set<string>();
         const workspaceNames = new Set(packages.map((pkg) => pkg.name).filter((name): name is string => !!name));
         const mappedSpecifiers = loadImportMapSpecifiers(projectRoot);
+        const isBundlerAlias = loadBundlerAliases(projectRoot, [...context.allFiles, ...context.textFiles]);
         for (const [file, imports] of moduleGraph.importsByFile) {
             const pkg = ownerOf(file);
             // Examples, benchmarks and fixtures are self-contained snippets with their own (or no) manifest.
@@ -279,6 +283,7 @@ export function runDependencyRules(context: RuleContext): Finding[] {
                 if (importInfo.isRelative || importInfo.resolved) continue;
                 const usedName = packageNameFromSpecifier(importInfo.specifier);
                 if (isNonPackageSpecifier(importInfo.specifier) || importInfo.isPathAlias || mappedSpecifiers.has(usedName) || mappedSpecifiers.has(importInfo.specifier)) continue;
+                if (isBundlerAlias(importInfo.specifier) || isFrameworkVirtualModule(importInfo.specifier, declared)) continue;
                 // A package may import itself by name, and workspace siblings are linked rather than installed.
                 if (workspaceNames.has(usedName)) continue;
                 // `import type { X } from 'mdx/types'` is typed by @types/mdx, which is the package that is declared.
@@ -318,6 +323,15 @@ export function runDependencyRules(context: RuleContext): Finding[] {
             if (reported.has(key)) continue;
             reported.add(key);
 
+            // The line where each file pulls in the next one, so the chain can be followed in an editor.
+            const hops = cycle.slice(0, -1).map((file, index) => {
+                const target = cycle[index + 1];
+                const hop = moduleGraph.importsByFile.get(file)?.find((info) => info.resolved === target && !info.isTypeOnly);
+                return `${relativeCycle[index]}:${hop?.line ?? 1}`;
+            });
+            const chain = [...hops, relativeCycle[relativeCycle.length - 1]].join(' → ');
+            const firstLine = Number(hops[0].slice(hops[0].lastIndexOf(':') + 1)) || 1;
+
             findings.push(
                 buildFinding({
                     ruleId: 'DEP003',
@@ -325,10 +339,10 @@ export function runDependencyRules(context: RuleContext): Finding[] {
                     severity: 'MEDIUM',
                     confidence: 'HIGH',
                     file: relativeCycle[0],
-                    line: 1,
+                    line: firstLine,
                     column: 1,
                     message: 'Circular import detected',
-                    description: 'A cycle exists in the internal module import graph.',
+                    description: `A cycle exists in the internal module import graph: ${chain}`,
                     evidence: relativeCycle.join(' -> '),
                     suggestion: 'Break the cycle by extracting shared code into a separate module.',
                     fixAvailable: false

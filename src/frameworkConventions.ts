@@ -28,8 +28,27 @@ const CONVENTIONS: FrameworkConvention[] = [
         ],
         allFilesAreEntries: ['pages'],
         rootFileStems: ['middleware', 'proxy', 'instrumentation', 'instrumentation-client', 'mdx-components']
+    },
+    {
+        // Docusaurus loads swizzled theme components, pages, client modules and local plugins by location.
+        dependency: '@docusaurus/core',
+        routerDirs: [],
+        routerFileStems: [],
+        allFilesAreEntries: ['src/theme', 'src/pages', 'src/clientModules', 'src/plugins', 'static'],
+        rootFileStems: ['sidebars', 'sidebar', 'babel.config']
+    },
+    {
+        // Nest bootstraps from main.ts; nothing imports it.
+        dependency: '@nestjs/core',
+        routerDirs: [],
+        routerFileStems: [],
+        allFilesAreEntries: [],
+        rootFileStems: ['main']
     }
 ];
+
+/** Service workers are registered by URL (`navigator.serviceWorker.register('/sw.js')`), never imported. */
+const SERVICE_WORKER_FILE = /(?:^|\/)(?:service-?worker|sw|[\w-]+-sw|sw-[\w-]+|firebase-messaging-sw)\.[cm]?[jt]s$/i;
 
 const SOURCE_EXTENSION = /\.(?:[cm]?[jt]sx?|mdx)$/;
 
@@ -39,6 +58,7 @@ const SOURCE_ROOTS = ['', 'src/'];
 export function isFrameworkEntryFile(relativePath: string, dependencies: Set<string>): boolean {
     if (!SOURCE_EXTENSION.test(relativePath)) return false;
     const stem = path.posix.basename(relativePath).replace(SOURCE_EXTENSION, '');
+    if (SERVICE_WORKER_FILE.test(relativePath)) return true;
 
     for (const convention of CONVENTIONS) {
         if (!dependencies.has(convention.dependency)) continue;
@@ -53,4 +73,25 @@ export function isFrameworkEntryFile(relativePath: string, dependencies: Set<str
         }
     }
     return false;
+}
+
+/**
+ * Import specifiers a framework's build tool resolves itself, so they are not npm packages and need no
+ * declaration. Each applies only when the framework is a declared dependency: `@site/src/x` means nothing
+ * in a project that does not use Docusaurus, and an undeclared package of that name is a real problem.
+ */
+const VIRTUAL_MODULES: Array<{ dependency: RegExp; specifier: RegExp }> = [
+    // Docusaurus: theme components and site files are aliased; `@docusaurus/Link` and friends are served by core.
+    { dependency: /^@docusaurus\//, specifier: /^(?:@theme|@theme-original|@theme-init|@site|@generated|@docusaurus)(?:\/|$)/ },
+    // SvelteKit: `$app/stores`, `$env/static/private`, `$lib/x`, `$service-worker`.
+    { dependency: /^@sveltejs\/kit$/, specifier: /^\$(?:app|env|lib|service-worker)(?:\/|$)/ },
+    // VitePress: `@theme/...` and `virtual:` modules.
+    { dependency: /^vitepress$/, specifier: /^@theme(?:\/|$)/ },
+    // Astro and Vite virtual modules (`astro:content`, `virtual:pwa-register`) are also caught by the scheme check.
+    { dependency: /^(?:astro|vite|vitepress)$/, specifier: /^(?:astro|virtual):/ }
+];
+
+export function isFrameworkVirtualModule(specifier: string, declaredDependencies: Set<string>): boolean {
+    return VIRTUAL_MODULES.some(({ dependency, specifier: pattern }) =>
+        pattern.test(specifier) && [...declaredDependencies].some((declared) => dependency.test(declared)));
 }

@@ -5,7 +5,7 @@ import { isTestFile } from './discovery';
  * (`console.log`, an unused callback parameter, `md5` in a checksum test) means something different in a
  * test, a build script or an example, so each rule declares which kinds it applies to.
  */
-export type FileKind = 'production' | 'test' | 'typeTest' | 'example' | 'benchmark' | 'script' | 'fixture';
+export type FileKind = 'production' | 'test' | 'typeTest' | 'example' | 'benchmark' | 'script' | 'fixture' | 'vendor';
 
 const TYPE_TEST_FILE = /\.(?:tst|test-d|spec-d)\.[cm]?tsx?$|(?:^|\/)(?:types?[-_]?tests?|tsd|__tests?_dts__|tests?_dts)\//i;
 const FIXTURE_DIR = /(?:^|\/)(?:fixtures?|__fixtures__|__mocks__|mocks?|testdata|test-data|snapshots?)\//i;
@@ -13,6 +13,9 @@ const EXAMPLE_DIR = /(?:^|\/)(?:examples?|samples?|demos?|sandbox|playground|doc
 // Project scaffolds shipped for users to copy (create-vite/template-*, generators): real files, but never wired into the product.
 const TEMPLATE_DIR = /(?:^|\/)(?:templates?|template-[^/]+|scaffolds?|boilerplates?|starters?|generators?\/templates?)\//i;
 const BENCHMARK_DIR = /(?:^|\/)(?:bench(?:marks?)?|perf|performance)\//i;
+// Third-party code committed into the repository, and plain scripts served from an assets folder: not the project's own code.
+const VENDOR_DIR = /(?:^|\/)(?:vendors?|third[-_]?party|bower_components|extern(?:al)?)\//i;
+const ASSET_SCRIPT = /(?:^|\/)assets\/(?:[^/]+\/)*[^/]+\.[cm]?jsx?$/i;
 const SCRIPT_DIR = /(?:^|\/)(?:scripts?|tools?|bin|\.github|\.husky|ci)\//i;
 
 export function classifyFile(relativePath: string): FileKind {
@@ -22,6 +25,7 @@ export function classifyFile(relativePath: string): FileKind {
     if (isTestFile(path) || /(?:^|\/)(?:tests?|__tests__|spec|e2e|integration|cypress|playwright)\//i.test(path)) return 'test';
     // `test-resolution.ts`, `foo.test-utils.ts`: test code that is not in a test folder.
     if (/(?:^|\/)(?:tests?|spec)[-_.][^/]*$|[-_.](?:tests?|spec)\.[cm]?[jt]sx?$/i.test(path)) return 'test';
+    if (VENDOR_DIR.test(path) || ASSET_SCRIPT.test(path)) return 'vendor';
     if (BENCHMARK_DIR.test(path) || /(?:^|\/)packages\/bench\b/i.test(path)) return 'benchmark';
     if (EXAMPLE_DIR.test(path) || TEMPLATE_DIR.test(path)) return 'example';
     if (SCRIPT_DIR.test(path)) return 'script';
@@ -55,6 +59,7 @@ const RULE_SCOPE: Record<string, Scope> = {
     // committed in a test file is still a leaked key.
     SEC002: 'runtime', SEC003: 'runtime', SEC004: 'runtime', SEC005: 'runtime', SEC006: 'runtime',
     SEC007: 'runtime', SEC008: 'runtime', SEC009: 'runtime', SEC010: 'runtime',
+    SEC011: 'runtime', SEC012: 'runtime', SEC013: 'runtime', SEC014: 'runtime',
     DEP003: 'production'
 };
 

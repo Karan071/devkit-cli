@@ -19,7 +19,13 @@
     "dev": "tsx src/cli.ts",
     "scan": "tsx src/cli.ts scan",
     "test": "vitest run",
-    "prepublishOnly": "npm run build && npm test"
+    "prepublishOnly": "npm run build && npm test",
+    "bench": "tsx bench/score.ts",
+    "bench:check": "tsx bench/score.ts --seeded-only --check",
+    "bench:corpus": "tsx bench/run.ts",
+    "bench:sample": "tsx bench/sample.ts",
+    "bench:typecheck": "tsc -p bench/tsconfig.json",
+    "bench:report": "tsx bench/score.ts --markdown bench/ACCURACY.md --write-quality"
   },
   "repository": {
     "type": "git",

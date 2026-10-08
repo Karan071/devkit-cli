@@ -1,0 +1,9 @@
+export const googleKey = '@@GOOGLE_API_KEY@@'; // planted: google-api-key
+export const openaiKey = '@@OPENAI_KEY@@'; // planted: openai-key
+export const anthropicKey = '@@ANTHROPIC_KEY@@'; // planted: anthropic-key
+export const gitlabToken = '@@GITLAB_TOKEN@@'; // planted: gitlab-token
+export const npmToken = '@@NPM_TOKEN@@'; // planted: npm-token
+export const sendgridKey = '@@SENDGRID_KEY@@'; // planted: sendgrid-key
+export const twilioKey = '@@TWILIO_KEY@@'; // planted: twilio-key
+export const azureConnection = 'DefaultEndpointsProtocol=https;@@AZURE_STORAGE_KEY@@'; // planted: azure-storage-key
+export const databaseUrl = '@@DATABASE_URL@@'; // planted: database-url

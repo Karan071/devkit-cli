@@ -1,0 +1,46 @@
+{
+  "repos": [
+    {
+      "name": "zod",
+      "url": "https://github.com/colinhacks/zod.git",
+      "commit": "0b216ef674e297ebe41d8bf902262e56f8755822",
+      "kind": "library"
+    },
+    {
+      "name": "hono",
+      "url": "https://github.com/honojs/hono.git",
+      "commit": "f78a245abc393368583085e19c7f5b28b460bf51",
+      "kind": "framework"
+    },
+    {
+      "name": "trpc",
+      "url": "https://github.com/trpc/trpc.git",
+      "commit": "d756e591a5e37ef20b8d75ecd4d736c195497289",
+      "kind": "monorepo, Docusaurus/Next"
+    },
+    {
+      "name": "excalidraw",
+      "url": "https://github.com/excalidraw/excalidraw.git",
+      "commit": "4c00f31ddcc20086bac1020428819fe0b9a30bce",
+      "kind": "app"
+    },
+    {
+      "name": "nest",
+      "url": "https://github.com/nestjs/nest.git",
+      "commit": "f4b5ff48bccd6e593acb11dfdd55007ad4a5f4f8",
+      "kind": "framework, Nest-style"
+    },
+    {
+      "name": "date-fns",
+      "url": "https://github.com/date-fns/date-fns.git",
+      "commit": "717ce0a807ea4c6b540d015b5c408723175b2838",
+      "kind": "library"
+    },
+    {
+      "name": "juice-shop",
+      "url": "https://github.com/juice-shop/juice-shop.git",
+      "commit": "0e6d909b7466e76bc8deabf2fdb62bc5c849961f",
+      "kind": "app, deliberately vulnerable (ground truth for injection findings)"
+    }
+  ]
+}

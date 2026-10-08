@@ -1,5 +1,5 @@
 import { isTestFile } from './discovery';
-import type { Confidence, Finding, Severity } from './types';
+import type { Confidence, Finding, ScoreDrain, Severity } from './types';
 
 export const CATEGORY_WEIGHTS: Record<string, number> = {
     deadCode: 0.15,
@@ -19,7 +19,8 @@ const SEVERITY_WEIGHT: Record<Severity, number> = {
     HIGH: 2.5,
     MEDIUM: 1.5,
     LOW: 0.8,
-    INFO: 0.2
+    // Informational findings are shown but never cost points.
+    INFO: 0
 };
 
 const CONFIDENCE_WEIGHT: Record<Confidence, number> = {
@@ -43,15 +44,45 @@ function findingPenalty(finding: Finding): number {
 }
 
 /**
+ * One rule's cost in category points before it stops growing linearly. Past the knee, extra findings of the same
+ * rule add only logarithmically, so one noisy rule (500 `any`s) cannot flatten a whole category by itself while a
+ * handful of findings still count in full.
+ */
+const RULE_COST_KNEE = 2;
+
+export function dampenRuleCost(points: number): number {
+    return points <= RULE_COST_KNEE ? points : RULE_COST_KNEE + Math.log(points - RULE_COST_KNEE + 1);
+}
+
+interface CategoryScore {
+    score: number;
+    /** Points each rule took off this category. */
+    costByRule: Map<string, number>;
+}
+
+/**
  * Quality categories are scored by density (penalty per 500 LOC), so a large codebase is not
  * punished for its size. Security tolerance grows only with the square root of size and is capped
  * at 3x: one leaked key is just as serious in a 50k-line repository as in a 500-line one.
  */
-function normalizedCategoryScore(findings: Finding[], loc: number, category: string): number {
-    const penalty = findings.reduce((sum, finding) => sum + findingPenalty(finding), 0);
+function scoreCategory(findings: Finding[], loc: number, category: string): CategoryScore {
     const chunks = Math.max(loc / LOC_CHUNK, 1);
     const normalizer = category === 'security' ? Math.min(Math.sqrt(chunks), 3) : chunks;
-    return Math.max(0, Math.min(10, 10 - penalty / normalizer));
+
+    const penaltyByRule = new Map<string, number>();
+    for (const finding of findings) penaltyByRule.set(finding.ruleId, (penaltyByRule.get(finding.ruleId) ?? 0) + findingPenalty(finding));
+
+    const costByRule = new Map<string, number>();
+    let total = 0;
+    for (const [rule, penalty] of penaltyByRule) {
+        const cost = dampenRuleCost(penalty / normalizer);
+        costByRule.set(rule, cost);
+        total += cost;
+    }
+    // The score bottoms out at 0; shrink every rule's share equally when their sum overshoots.
+    const scale = total > 10 ? 10 / total : 1;
+    for (const [rule, cost] of costByRule) costByRule.set(rule, cost * scale);
+    return { score: Math.max(0, Math.min(10, 10 - total)), costByRule };
 }
 
 function hasCredibleSecurityIssue(findings: Finding[]): boolean {
@@ -66,6 +97,8 @@ function hasCredibleSecurityIssue(findings: Finding[]): boolean {
 
 export interface ScoringResult {
     overallScore: number;
+    /** Rules ranked by how many overall points they cost; INFO-only rules cost nothing and are left out. */
+    drains: ScoreDrain[];
     categoryScores: Record<string, number>;
     securityScore: number;
     /** True when the overall score was capped because of a credible security finding. */
@@ -81,13 +114,20 @@ export function computeScores(findings: Finding[], loc: number, options: Scoring
     const architectureConfigured = options.architectureConfigured ?? true;
     const categories = Object.keys(CATEGORY_WEIGHTS).filter((category) => category !== 'architecture' || architectureConfigured);
     const categoryScores: Record<string, number> = {};
+    const totalWeight = categories.reduce((sum, category) => sum + CATEGORY_WEIGHTS[category], 0);
+    const drains: ScoreDrain[] = [];
 
     for (const category of categories) {
         const categoryFindings = findings.filter((finding) => finding.category === category);
-        categoryScores[category] = Number(normalizedCategoryScore(categoryFindings, loc, category).toFixed(1));
+        const scored = scoreCategory(categoryFindings, loc, category);
+        categoryScores[category] = Number(scored.score.toFixed(1));
+        for (const [ruleId, cost] of scored.costByRule) {
+            const pointsLost = (CATEGORY_WEIGHTS[category] / totalWeight) * cost;
+            if (pointsLost > 0) drains.push({ ruleId, category, count: categoryFindings.filter((finding) => finding.ruleId === ruleId).length, pointsLost });
+        }
     }
+    drains.sort((a, b) => b.pointsLost - a.pointsLost);
 
-    const totalWeight = categories.reduce((sum, category) => sum + CATEGORY_WEIGHTS[category], 0);
     const weighted = categories.reduce((sum, category) => sum + CATEGORY_WEIGHTS[category] * categoryScores[category], 0) / totalWeight;
 
     const securityCapped = hasCredibleSecurityIssue(findings) && weighted > SECURITY_CAP;
@@ -95,6 +135,7 @@ export function computeScores(findings: Finding[], loc: number, options: Scoring
 
     return {
         overallScore: Number(overallScore.toFixed(1)),
+        drains,
         categoryScores,
         securityScore: categoryScores.security,
         securityCapped
