@@ -13,6 +13,7 @@ import { runInteractiveInit } from './initInteractive';
 import { planFixes, writeFixes } from './fixes';
 import { parseAdapterList, type AdapterName } from './adapters';
 import readline from 'node:readline/promises';
+import { readVersion } from './version';
 import { ProgressRenderer, color, pad, severityColor } from './terminal';
 import { determineExitFailure, filterFindings, validateGates } from './cliLogic';
 import type { ScanSummary } from './types';
@@ -40,7 +41,7 @@ function scanWithProgress(root: string, engineOptions: ScanEngineOptions = {}): 
 
 const program = new Command();
 
-program.name('devkit').description('Deterministic repository-quality scanner for JavaScript and TypeScript projects').version('0.1.0');
+program.name('devkit').description('Deterministic repository-quality scanner for JavaScript and TypeScript projects').version(readVersion());
 
 program
     .command('init')
