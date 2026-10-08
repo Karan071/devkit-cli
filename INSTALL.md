@@ -2,6 +2,8 @@
 
 DevKit is a command-line scanner for JavaScript and TypeScript repositories. It runs from your React project's root directory and scans source files such as `.js`, `.jsx`, `.ts`, and `.tsx`. It is not a React component and does not need to be imported into your app. It runs offline and does not call an LLM or any network service.
 
+> **Which version do you have?** Run `devkit --version` (or `npx devkit-quality --version`). The commands marked **0.2.0** in this guide (`doctor`, `fix --write`, `scan --since`, `scan --with`, `--all`, `--audit`, `init --interactive`) and the new security rules (`SEC011`–`SEC014`) need 0.2.0 or later. `npm view devkit-quality version` shows what is published; if it is older than 0.2.0, use a local checkout (below) or the source from the GitHub release.
+
 There are two ways to use it:
 
 - **Run it without installing** (quickest): `npx devkit-quality scan` from your project root.
@@ -12,6 +14,8 @@ There are two ways to use it:
 - Node.js `^22.12.0`, `^24.0.0`, or `>=26.0.0` (Node 18 and 20 are not supported)
 - npm
 - A React project with a `package.json`
+- Your project's own dependencies installed (`npm install`, `pnpm install`, …). DevKit works without them, but type-based findings are then reported at low confidence and a warning says so
+- A git repository, if you want `scan --since` (it compares against a git ref)
 - Optional: `gitleaks` and `knip` on your `PATH`, if you want to use `scan --with`
 
 ## Quick start (no install)
@@ -100,6 +104,21 @@ npx devkit scan
 
 The terminal report shows a boxed header, the score with a letter grade, the biggest score drains, and panels for scan coverage, per-category scores, severity counts, file hotspots, the worst finding per category, and next steps. Set `NO_COLOR=1` to turn colors off, or `DEVKIT_ASCII=1` for plain-ASCII glyphs if your terminal does not render the box and bar characters.
 
+### Reading the report
+
+The terminal report is DevKit's interface (there is no separate graphical or web app). From top to bottom:
+
+1. **Header box** — the tool and the path being scanned.
+2. **Score** — `x / 10`, a letter grade, and a bar. A `▲ Capped at 6.9` line means a serious, confident security finding limited the score however clean the rest is. Fix that first.
+3. **Biggest score drains** — the three rules costing the most points, with their cost (for example `-0.49`) and how many findings each has. This is the quickest way to raise the score.
+4. **Scan coverage** — files found, analyzed and secret-scanned; lines of code; what was skipped; and a **Project** line (dependencies installed? tsconfig, packages, frameworks, entry points, unresolved imports). Yellow warnings here, such as "dependencies are not installed", explain why some findings are low confidence.
+5. **Categories** — one bar per category. `✔ clean` means no findings; `n/a` for Architecture means no layers are configured.
+6. **Findings, Hotspots** — severity counts, and the files that cost the most points.
+7. **Top issues** — the worst finding in each category, with an explanation, a suggested fix and a code frame at the exact line.
+8. **Next steps** — how many findings were not shown, and how many lower-confidence findings were hidden by default.
+
+By default the report lists only findings worth acting on, so a short list does not mean the rest was ignored: the **hidden** count in *Next steps* says how many were left out, and `--all` shows them. Findings marked `INFO` (for example a public Firebase key, or a sample credential in a test) are shown but cost no points. For the reasoning behind any rule, run `npx devkit explain <RULE_ID>`.
+
 Choose another output format when useful:
 
 ```bash
@@ -124,6 +143,8 @@ npx devkit scan --audit    # --all, plus findings in tests, examples, benchmarks
 
 Scores always cover the whole repository, whatever you filter.
 
+To silence a finding you have decided to accept, add a comment: `// devkit-disable-next-line SEC009` (the next line) or `// devkit-disable-file DUP001` (the whole file). Without rule IDs, every rule is silenced.
+
 Check only what a pull request changed:
 
 ```bash
@@ -142,6 +163,34 @@ Use quality gates in a script or CI job. These commands return a failing exit co
 npx devkit scan --fail-on high
 npx devkit scan --min-score 8
 ```
+
+`--min-score` always uses the whole repository; `--fail-on` gates on the findings that are listed, so with `--since` it fails only on what changed.
+
+### Use it in CI
+
+A minimal GitHub Actions job that fails a pull request on new high-severity findings and on a low overall score:
+
+```yaml
+name: DevKit
+on:
+  pull_request:
+    branches: [main]
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # --since needs the base branch's history
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci                # install dependencies so type-based findings are reliable
+      - run: npx devkit-quality@0.2.0 scan --since origin/${{ github.base_ref }} --fail-on high
+      - run: npx devkit-quality@0.2.0 scan --min-score 7
+```
+
+Pin the version (`@0.2.0`) so a new release cannot change your gate. This needs 0.2.0 to be published on npm: if `npm view devkit-quality version` still shows 0.1.x, build DevKit from its repository in the job instead of using `npx`. To send results to GitHub code scanning, add `scan --format sarif > devkit.sarif` and upload it with `github/codeql-action/upload-sarif`; the README has the full workflow.
 
 ## Other commands
 
@@ -178,7 +227,7 @@ npx devkit fix            # preview only
 npx devkit fix --write    # apply: unused imports, console.log/debug, var -> let/const
 ```
 
-`fix --write` re-checks every changed file and leaves it untouched if a fix would add a compile error. Review the diff and run your tests afterwards.
+`fix --write` re-checks every changed file and leaves it untouched if a fix would add a compile error. Review the diff and run your tests afterwards. Commit or stash your own changes first so the diff contains only DevKit's edits.
 
 ## Run DevKit's own checks
 
@@ -188,7 +237,25 @@ To work on DevKit itself, return to its checkout and run the test suite and Type
 cd /path/to/devkit
 npm test
 npm run build
+npm run bench:check     # the accuracy gate CI runs: planted issues and per-rule accuracy
 ```
+
+`npm run bench` prints the full catch-rate and accuracy report. To see how the scanner is measured, read [bench/README.md](bench/README.md); the published per-rule accuracy is in [bench/ACCURACY.md](bench/ACCURACY.md).
+
+## Troubleshooting
+
+| Symptom | What to do |
+| --- | --- |
+| `devkit: command not found` | With a local checkout, run `npm run build` and `npm link` in the DevKit directory, then `npm link devkit-quality` in your project. With `npx`, use `npx devkit-quality …` (the package is `devkit-quality`; the command it installs is `devkit`). |
+| `unknown command 'doctor'` or `unknown option '--since'` | You are on a version older than 0.2.0. Check `devkit --version`; use a local checkout or update. |
+| A warning says dependencies are not installed | Run your package manager's install, then scan again. Until then `TS001` and `ERR003` are low confidence and hidden by default. `devkit doctor` shows the exact command. |
+| "No JavaScript/TypeScript files were analyzed" | Run `devkit` from the project root, and check `scan.include`/`scan.exclude` in `.devkitrc.json` and your `.devkitignore`. |
+| Far fewer findings than expected | The default view hides lower-confidence findings; see the hidden count under *Next steps* and use `--all`. Tests, examples and fixtures need `--audit`. |
+| `--since` fails immediately | The ref does not exist locally. In CI, fetch history (`fetch-depth: 0`) and use `origin/<branch>`. |
+| `--with gitleaks,knip` prints a warning | The tool is not on your `PATH` or in `node_modules/.bin`, or printed output DevKit could not read. The built-in scan still completes. |
+| Box and bar characters look broken | Set `DEVKIT_ASCII=1`. Set `NO_COLOR=1` to remove colors. |
+| Scores differ from an older DevKit | 0.2.0 scores production code only and caps any one rule's cost. Re-create a stored baseline with `devkit baseline create`. |
+| The scan is slow on a very large repository | Exclude generated or vendored folders in `.devkitrc.json`, or run `devkit init --interactive` to get suggestions. |
 
 ## Unlink DevKit
 
@@ -205,4 +272,4 @@ cd /path/to/devkit
 npm unlink
 ```
 
-For configuration, scoring and CI details, see the [README](README.md).
+For configuration, scoring, taint tracking and CI details, see the [README](README.md). For what changed in each release, see the [CHANGELOG](CHANGELOG.md).
