@@ -220,7 +220,8 @@ export function runDependencyRules(context: RuleContext): Finding[] {
             });
             // Compiler options that pull in a package without any import: `importHelpers` loads tslib, `jsxImportSource` the JSX runtime.
             const tsOptions = loadTsConfigFor(pkg.root)?.options;
-            if (tsOptions?.importHelpers) usedElsewhere.add('tslib');
+            // The Angular CLI turns on importHelpers for every build, so an Angular project needs tslib whatever its tsconfig says.
+            if (tsOptions?.importHelpers || [...pkg.declared].some((name) => name.startsWith('@angular/'))) usedElsewhere.add('tslib');
             if (tsOptions?.jsxImportSource) usedElsewhere.add(packageNameFromSpecifier(tsOptions.jsxImportSource));
             const mentionCandidates = packageTextFiles.filter((file) => path.basename(file) !== 'package.json' && !/\.(?:md|mdx|markdown|rst|txt|adoc)$/i.test(file));
 
