@@ -438,7 +438,7 @@ export const rules: RuleDefinition[] = [
         category: 'security',
         severity: 'HIGH',
         confidence: 'HIGH',
-        description: 'Certificate verification is switched off: NODE_TLS_REJECT_UNAUTHORIZED=0, rejectUnauthorized: false, strictSSL: false, insecure: true, or a no-op checkServerIdentity.',
+        description: 'Certificate verification is switched off: the NODE_TLS' + '_REJECT_UNAUTHORIZED environment variable set to 0, rejectUnauthorized: false, strictSSL: false, insecure: true, or a no-op checkServerIdentity.',
         explanation: 'The environment variable is found by text scan; the options are found in the syntax tree.',
         example: 'process.env.NODE_TLS' + '_REJECT_UNAUTHORIZED = "0"',
         why: 'Disabling TLS verification exposes the process to man-in-the-middle attacks.',

@@ -8,6 +8,23 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **Output you can trust** (#8: O1-O6).
+  - The default output lists only HIGH/CERTAIN-confidence findings from rules
+    that measured at least 85% accuracy (security findings at MEDIUM
+    confidence stay visible). `--all` lists everything; `--audit` also lists
+    findings in tests, examples and fixtures. The scan says how many findings
+    were hidden (O1).
+  - A single rule's cost to a category grows logarithmically past 2 points, so
+    one noisy rule no longer dominates (O2).
+  - The headline score counts shipped code only; findings in tests, examples,
+    benchmarks and fixtures are not scored (O3).
+  - The three rules that cost the most points are listed with their cost, in
+    the terminal, Markdown and JSON (`scoreDrains`) (O4).
+  - Import cycles show the whole chain with the importing line of each file:
+    `a.ts:12 → b.ts:3 → a.ts` (O5).
+  - Finding ids are fingerprints of rule, file and normalized code, not line
+    numbers, so they survive refactors (O6).
+
 - **Per-rule false positives** (#8: R1-R4).
   - **ERR003** ignores calls typed `void | Promise<void>` and `Object.assign`
     decorators, and reports a promise started inside a React effect or an

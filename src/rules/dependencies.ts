@@ -322,6 +322,15 @@ export function runDependencyRules(context: RuleContext): Finding[] {
             if (reported.has(key)) continue;
             reported.add(key);
 
+            // The line where each file pulls in the next one, so the chain can be followed in an editor.
+            const hops = cycle.slice(0, -1).map((file, index) => {
+                const target = cycle[index + 1];
+                const hop = moduleGraph.importsByFile.get(file)?.find((info) => info.resolved === target && !info.isTypeOnly);
+                return `${relativeCycle[index]}:${hop?.line ?? 1}`;
+            });
+            const chain = [...hops, relativeCycle[relativeCycle.length - 1]].join(' → ');
+            const firstLine = Number(hops[0].slice(hops[0].lastIndexOf(':') + 1)) || 1;
+
             findings.push(
                 buildFinding({
                     ruleId: 'DEP003',
@@ -329,10 +338,10 @@ export function runDependencyRules(context: RuleContext): Finding[] {
                     severity: 'MEDIUM',
                     confidence: 'HIGH',
                     file: relativeCycle[0],
-                    line: 1,
+                    line: firstLine,
                     column: 1,
                     message: 'Circular import detected',
-                    description: 'A cycle exists in the internal module import graph.',
+                    description: `A cycle exists in the internal module import graph: ${chain}`,
                     evidence: relativeCycle.join(' -> '),
                     suggestion: 'Break the cycle by extracting shared code into a separate module.',
                     fixAvailable: false

@@ -1,5 +1,5 @@
-import { listRules } from './rules';
-import { SECURITY_CAP, summarizeHotspots, summarizeTopDeductions } from './scoring';
+import { getRuleById, listRules } from './rules';
+import { SECURITY_CAP, summarizeHotspots } from './scoring';
 import {
     color,
     formatDuration,
@@ -53,6 +53,10 @@ function confidenceRank(confidence: Confidence): number {
 const MAX_DETAILED_FINDINGS = 6;
 const SEVERITIES = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO'] as const;
 
+function hiddenNote(count: number): string {
+    return `${plural(count, 'lower-confidence finding')} hidden. Run with --all to list them (--audit also includes tests and examples).`;
+}
+
 function plural(count: number, word: string): string {
     return `${count} ${word}${count === 1 ? '' : 's'}`;
 }
@@ -73,6 +77,14 @@ function renderScore(summary: ScanSummary, width: number): string[] {
     const scoreText = `${color.bold(scoreColor(summary.score, summary.score.toFixed(1)))}${color.dim(' / 10')}`;
     lines.push(`  ${scoreText}   ${color.dim('grade')} ${grade}  ${scoreColor(summary.score, scoreLabel(summary.score))}`);
     lines.push(`  ${renderScoreBar(summary.score, Math.min(48, width - 4))}`);
+    const drains = summary.scoreDrains ?? [];
+    if (drains.length > 0) {
+        lines.push(`  ${color.dim('Biggest score drains:')}`);
+        drains.forEach((drain, index) => {
+            const title = getRuleById(drain.ruleId)?.title ?? drain.ruleId;
+            lines.push(`  ${color.dim(`${index + 1}.`)} ${color.cyan(pad(drain.ruleId, 11))}${pad(truncateMiddle(title, 34), 36)}${color.red(`-${drain.pointsLost.toFixed(2)}`)} ${color.dim(`(${plural(drain.count, 'finding')})`)}`);
+        });
+    }
     if (summary.securityCapped) {
         lines.push(`  ${color.red(`${glyph.warn} Capped at ${SECURITY_CAP}`)} ${color.dim('— a high-confidence security finding outweighs code quality. Fix it first.')}`);
     }
@@ -199,7 +211,11 @@ export function formatTerminal(summary: ScanSummary): string {
 
     if (summary.findings.length === 0) {
         lines.push('');
-        lines.push(`  ${color.green(`${glyph.check} No findings.`)} ${color.dim('The repository looks clean.')}`);
+        if ((summary.hiddenByDefault ?? 0) > 0) {
+            lines.push(`  ${color.green(`${glyph.check} No findings worth acting on.`)} ${color.dim(hiddenNote(summary.hiddenByDefault ?? 0))}`);
+        } else {
+            lines.push(`  ${color.green(`${glyph.check} No findings.`)} ${color.dim('The repository looks clean.')}`);
+        }
         lines.push('');
         return lines.join('\n');
     }
@@ -215,6 +231,7 @@ export function formatTerminal(summary: ScanSummary): string {
     if (remaining > 0) {
         lines.push(color.dim(`  ${plural(remaining, 'more finding')} not shown above.`));
     }
+    if ((summary.hiddenByDefault ?? 0) > 0) lines.push(color.dim(`  ${hiddenNote(summary.hiddenByDefault ?? 0)}`));
     const hint = (command: string, text: string) => `  ${color.cyan(pad(command, 32))}${color.dim(text)}`;
     lines.push(hint('devkit scan --category <name>', 'focus on one category (e.g. security, dead-code)'));
     lines.push(hint('devkit scan --format markdown', 'full report with every finding'));
@@ -255,15 +272,19 @@ export function formatMarkdown(summary: ScanSummary): string {
     }
 
     lines.push('');
-    lines.push('## Main deductions');
+    lines.push('## Biggest score drains');
     lines.push('');
-    const deductions = summarizeTopDeductions(summary.findings);
-    if (deductions.length === 0) {
+    const drains = summary.scoreDrains ?? [];
+    if (drains.length === 0) {
         lines.push('No deductions.');
     } else {
-        for (const deduction of deductions) {
-            lines.push(`- ${deduction.count} ${deduction.ruleId} finding(s) (${humanizeCategory(deduction.category)})`);
+        for (const drain of drains) {
+            lines.push(`- ${drain.ruleId} ${getRuleById(drain.ruleId)?.title ?? ''} (${humanizeCategory(drain.category)}): -${drain.pointsLost.toFixed(2)} points, ${drain.count} finding(s)`);
         }
+    }
+    if ((summary.hiddenByDefault ?? 0) > 0) {
+        lines.push('');
+        lines.push(`_${hiddenNote(summary.hiddenByDefault ?? 0)}_`);
     }
 
     lines.push('');

@@ -297,19 +297,23 @@ Each finding is weighted by `severity × confidence` ([`src/scoring.ts`](src/sco
 
 - **Security cap:** a HIGH/CRITICAL security finding with HIGH or CERTAIN confidence outside test files caps the overall score at 6.9, however clean the rest of the code is.
 - **Architecture** is only scored when `architecture.layers` is configured; otherwise it is shown as `n/a` and the other weights are rescaled.
+- **Production code only:** the headline score and category scores count findings in shipped code (and scripts that run for real). Findings in tests, examples, benchmarks and fixtures are never scored, even with `--audit`.
+- **No single rule dominates:** each rule's cost to a category grows linearly up to 2 points and only logarithmically beyond, so 500 `any`s cannot flatten Type Safety on their own. The three rules that cost the most overall points are listed under "Biggest score drains".
+- **Informational findings** (`INFO`: public-by-design keys, sample credentials in tests) are listed but cost nothing.
 - **Filters** (`--category`, `--severity`) only narrow the findings that are displayed. Scores and `--min-score` always use the whole repository.
+- **Default output** lists only findings worth acting on: HIGH or CERTAIN confidence, from a rule whose measured accuracy is at least 85% (once it has 10+ labels). HIGH/CRITICAL security findings at MEDIUM confidence are kept, because hiding a probable injection would make a vulnerable repository look clean. `--all` lists everything; `--audit` also lists findings in tests, examples, benchmarks and fixtures. Scores, `--min-score` and the hidden count are unaffected. `--fail-on` gates on the findings that are listed.
 - A scan that analyzes zero JS/TS files prints a warning and always fails `--min-score`.
 
 ## Output formats
 
 - **Terminal** (default) — live progress on stderr, then a score with letter grade, scan coverage (files found, analyzed, secret-scanned, skipped, duration), per-category score bars, severity distribution, file hotspots, and code frames for the worst finding per category. Respects `NO_COLOR`/`FORCE_COLOR`; set `DEVKIT_ASCII=1` for plain-ASCII glyphs.
 - **JSON** (`--json` / `--format json`) — the full `ScanSummary` object: score, category scores, every finding, repository metrics.
-- **Markdown** (`--format markdown` / `devkit report`) — category table, top deductions, and a flat findings list, suitable for pasting into a PR description.
+- **Markdown** (`--format markdown` / `devkit report`) — category table, biggest score drains, and a flat findings list, suitable for pasting into a PR description.
 - **SARIF** (`--format sarif`) — standard SARIF 2.1.0, for GitHub code scanning and similar tools.
 
 ## Current limitations
 
-- Framework entry-point detection is limited to package metadata, tests, and a basic Next.js convention check. Other React setups such as Vite may need entry files specified through package metadata or imports.
+- Framework entry-point detection covers package metadata, tests, and the Next.js, Docusaurus and NestJS conventions plus service workers. Other setups, such as a Vite `index.html` entry, may need entry files specified through package metadata or imports.
 - Outside a git repository, `.gitignore` is approximated (negation patterns `!pattern` are skipped). `.devkitignore` never supports negation.
 - Non-JS/TS files (Python, Go, YAML, ...) only get the secret scan, not code-quality rules. Script blocks in `.vue`/`.svelte` files are not parsed.
 - `devkit fix` only previews findings marked as safe. It does not modify files.
@@ -323,7 +327,9 @@ Each finding is weighted by `severity × confidence` ([`src/scoring.ts`](src/sco
 
 ```bash
 devkit scan --min-score 7       # exit 1 if the overall score falls below 7
-devkit scan --fail-on high      # exit 1 if any HIGH or CRITICAL finding exists
+devkit scan --fail-on high      # exit 1 if any listed HIGH or CRITICAL finding exists
+devkit scan --all               # include low-confidence findings and low-accuracy rules
+devkit scan --audit             # --all, plus tests, examples and fixtures
 devkit baseline compare          # compare against a previously stored baseline
 ```
 

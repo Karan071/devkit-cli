@@ -55,6 +55,14 @@ export interface RepoMetrics {
     testToSourceRatio: number;
 }
 
+/** A rule's cost to the overall score. */
+export interface ScoreDrain {
+    ruleId: string;
+    category: string;
+    count: number;
+    pointsLost: number;
+}
+
 export interface ScanSummary {
     repository: string;
     score: number;
@@ -63,6 +71,10 @@ export interface ScanSummary {
     /** True when the overall score was capped because of a credible security finding. */
     securityCapped?: boolean;
     findings: Finding[];
+    /** The rules that cost the most points, largest first. */
+    scoreDrains?: ScoreDrain[];
+    /** Findings left out of the output by the default trust filter (see `--all`). */
+    hiddenByDefault?: number;
     metrics: RepoMetrics;
     generatedFiles: string[];
     coverage?: ScanCoverage;
@@ -80,6 +92,8 @@ export interface ScanCoverage {
     generatedFilesSkipped: number;
     /** Findings hidden because the rule does not apply to tests, examples, benchmarks or fixtures. Use `scan.includeNonProduction` to show them. */
     nonProductionFindingsHidden: number;
+    /** Findings in tests, examples, benchmarks and fixtures. They are listed but do not count toward the headline score. */
+    nonProductionFindingsUnscored?: number;
     tooLargeFilesSkipped: string[];
     binaryFilesSkipped: number;
     /** File count per extension across all discovered files, e.g. `{ ".ts": 42, ".json": 6 }`. */
