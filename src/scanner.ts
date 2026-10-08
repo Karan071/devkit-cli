@@ -21,6 +21,7 @@ import { runHygieneRules } from './rules/hygiene';
 import { computeScores } from './scoring';
 import { isSuppressed } from './suppressions';
 import { ruleAppliesTo } from './fileKind';
+import { TYPE_AWARE_RULES, assessTypeAwareness } from './typeAwareness';
 import type { Finding, RepoMetrics, ScanCoverage, ScanSummary } from './types';
 
 export interface ScanProgress {
@@ -151,6 +152,15 @@ export function scanRepository(projectRoot: string, onProgress: ProgressListener
     }
 
     nextPhase('Scoring');
+    const warnings: string[] = [];
+    const typeAwareness = assessTypeAwareness(projectRoot, packageJson, program, files);
+    if (typeAwareness.degraded && typeAwareness.reason) {
+        warnings.push(typeAwareness.reason);
+        for (const finding of allFindings) {
+            if (TYPE_AWARE_RULES.has(finding.ruleId)) finding.confidence = 'LOW';
+        }
+    }
+
     let hiddenNonProduction = 0;
     const findings: Finding[] = allFindings.filter((finding) => {
         if (!config.scan.includeNonProduction && !ruleAppliesTo(finding.ruleId, finding.file)) {
@@ -238,7 +248,8 @@ export function scanRepository(projectRoot: string, onProgress: ProgressListener
         tooLargeFilesSkipped: discovery.skipped.tooLarge,
         binaryFilesSkipped: discovery.skipped.binary,
         languages: countLanguages(allFiles),
-        durationMs: Date.now() - startedAt
+        durationMs: Date.now() - startedAt,
+        ...(warnings.length > 0 ? { warnings } : {})
     };
 
     return {

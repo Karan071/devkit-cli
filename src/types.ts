@@ -85,4 +85,6 @@ export interface ScanCoverage {
     /** File count per extension across all discovered files, e.g. `{ ".ts": 42, ".json": 6 }`. */
     languages: Record<string, number>;
     durationMs: number;
+    /** Conditions that make parts of this scan less reliable, e.g. dependencies not installed. */
+    warnings?: string[];
 }

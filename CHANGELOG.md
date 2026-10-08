@@ -8,6 +8,22 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **Dependency rules** (#8: D1-D4, R5).
+  - **DEP001** knows the executables of common tools (`typescript` → `tsc`,
+    Biome, Vitest, ESLint, Prettier, tsx, tsup, turbo, rimraf, ...) when
+    `node_modules` and the lockfile cannot say, so a fresh checkout no longer
+    reports them as unused (D1). `tslib` with `importHelpers` was already
+    honored; a regression test now covers it (D2).
+  - **DEP002** skips framework virtual modules, but only when the framework is
+    declared: Docusaurus (`@theme/*`, `@theme-original/*`, `@site/*`,
+    `@generated/*`, `@docusaurus/*`) and SvelteKit (`$app/*`, `$lib/*`, ...) (D3).
+    It also honors aliases from Vite/webpack/Rollup `resolve.alias`, Jest
+    `moduleNameMapper` and Babel `module-resolver`, next to tsconfig `paths`
+    (D4).
+  - When dependencies are not installed (no `node_modules`, or most imported
+    packages cannot be resolved), `TS001` and `ERR003` are reported at `LOW`
+    confidence and the scan shows a warning (`coverage.warnings` in JSON) (R5).
+
 - **SEC001 secret detection reworked** (#8: S1-S6, G2-G4). Moved to
   `src/rules/secrets.ts`.
   - In TS/JS the name-based check reads string literals from the syntax tree, so

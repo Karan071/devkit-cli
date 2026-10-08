@@ -103,6 +103,7 @@ function renderCoverage(summary: ScanSummary, width: number): string[] {
         .map(([extension, count]) => `${extension} ${color.dim(String(count))}`)
         .join(color.dim('  ·  '));
     if (languages) lines.push(`  ${color.dim('Files:')} ${languages}`);
+    for (const warning of coverage.warnings ?? []) lines.push(`  ${color.yellow(`${glyph.warn} ${warning}`)}`);
     return lines;
 }
 
@@ -238,6 +239,7 @@ export function formatMarkdown(summary: ScanSummary): string {
     if (summary.coverage) {
         const coverage = summary.coverage;
         lines.push(`- Coverage: ${coverage.discoveredFiles} files found, ${coverage.analyzedFiles} analyzed as JS/TS, ${coverage.textFilesScanned} other files secret-scanned, ${coverage.generatedFilesSkipped} generated skipped (${formatDuration(coverage.durationMs)})`);
+        for (const warning of coverage.warnings ?? []) lines.push(`- **Warning:** ${warning}`);
     }
     lines.push('');
 

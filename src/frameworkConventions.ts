@@ -54,3 +54,24 @@ export function isFrameworkEntryFile(relativePath: string, dependencies: Set<str
     }
     return false;
 }
+
+/**
+ * Import specifiers a framework's build tool resolves itself, so they are not npm packages and need no
+ * declaration. Each applies only when the framework is a declared dependency: `@site/src/x` means nothing
+ * in a project that does not use Docusaurus, and an undeclared package of that name is a real problem.
+ */
+const VIRTUAL_MODULES: Array<{ dependency: RegExp; specifier: RegExp }> = [
+    // Docusaurus: theme components and site files are aliased; `@docusaurus/Link` and friends are served by core.
+    { dependency: /^@docusaurus\//, specifier: /^(?:@theme|@theme-original|@theme-init|@site|@generated|@docusaurus)(?:\/|$)/ },
+    // SvelteKit: `$app/stores`, `$env/static/private`, `$lib/x`, `$service-worker`.
+    { dependency: /^@sveltejs\/kit$/, specifier: /^\$(?:app|env|lib|service-worker)(?:\/|$)/ },
+    // VitePress: `@theme/...` and `virtual:` modules.
+    { dependency: /^vitepress$/, specifier: /^@theme(?:\/|$)/ },
+    // Astro and Vite virtual modules (`astro:content`, `virtual:pwa-register`) are also caught by the scheme check.
+    { dependency: /^(?:astro|vite|vitepress)$/, specifier: /^(?:astro|virtual):/ }
+];
+
+export function isFrameworkVirtualModule(specifier: string, declaredDependencies: Set<string>): boolean {
+    return VIRTUAL_MODULES.some(({ dependency, specifier: pattern }) =>
+        pattern.test(specifier) && [...declaredDependencies].some((declared) => dependency.test(declared)));
+}

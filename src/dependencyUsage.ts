@@ -190,6 +190,65 @@ function readManifest(searchRoots: string[], name: string): Record<string, unkno
     return null;
 }
 
+/**
+ * Executables that differ from the package name, for when `node_modules` and the lockfile cannot say (a fresh
+ * checkout). Without this, `typescript` looks unused in a repo whose scripts only ever call `tsc`.
+ */
+const KNOWN_COMMANDS: Record<string, string[]> = {
+    typescript: ['tsc', 'tsserver'],
+    '@biomejs/biome': ['biome'],
+    vitest: ['vitest'],
+    eslint: ['eslint'],
+    prettier: ['prettier'],
+    tsx: ['tsx'],
+    tsup: ['tsup'],
+    turbo: ['turbo'],
+    rimraf: ['rimraf'],
+    'ts-node': ['ts-node', 'ts-node-esm'],
+    jest: ['jest'],
+    mocha: ['mocha'],
+    nodemon: ['nodemon'],
+    concurrently: ['concurrently'],
+    'cross-env': ['cross-env', 'cross-env-shell'],
+    'npm-run-all': ['npm-run-all', 'run-s', 'run-p'],
+    'npm-run-all2': ['npm-run-all', 'run-s', 'run-p'],
+    'lint-staged': ['lint-staged'],
+    husky: ['husky'],
+    webpack: ['webpack'],
+    'webpack-cli': ['webpack'],
+    'webpack-dev-server': ['webpack-dev-server', 'webpack serve'],
+    rollup: ['rollup'],
+    esbuild: ['esbuild'],
+    vite: ['vite'],
+    '@playwright/test': ['playwright'],
+    '@changesets/cli': ['changeset'],
+    '@angular/cli': ['ng'],
+    '@nestjs/cli': ['nest'],
+    '@vue/cli-service': ['vue-cli-service'],
+    '@storybook/cli': ['storybook', 'sb'],
+    'postcss-cli': ['postcss'],
+    'sass-embedded': ['sass'],
+    'tailwindcss': ['tailwindcss'],
+    'drizzle-kit': ['drizzle-kit'],
+    'drizzle-orm': [],
+    prisma: ['prisma'],
+    knip: ['knip'],
+    madge: ['madge'],
+    typedoc: ['typedoc'],
+    stylelint: ['stylelint'],
+    nx: ['nx'],
+    lerna: ['lerna'],
+    wrangler: ['wrangler'],
+    vercel: ['vercel'],
+    'wait-on': ['wait-on'],
+    'http-server': ['http-server'],
+    serve: ['serve'],
+    'ts-jest': [],
+    'size-limit': ['size-limit'],
+    'tsc-alias': ['tsc-alias'],
+    'ts-patch': ['tspc', 'ts-patch']
+};
+
 /** Executable names a package installs, from its manifest's `bin` field (a bare string means "named after the package"). */
 export function binNamesOf(searchRoots: string[], name: string): string[] {
     const manifest = readManifest(searchRoots, name);
@@ -197,7 +256,8 @@ export function binNamesOf(searchRoots: string[], name: string): string[] {
     // the executable is named after the package (`@biomejs/biome` → `biome`, `prettier` → `prettier`).
     if (!manifest) {
         const unscoped = name.startsWith('@') ? name.split('/')[1] ?? '' : name;
-        return unscoped ? [unscoped, unscoped.replace(/-cli$/, '')].filter((candidate, index, all) => candidate.length >= 3 && all.indexOf(candidate) === index) : [];
+        const conventional = unscoped ? [unscoped, unscoped.replace(/-cli$/, '')] : [];
+        return [...(KNOWN_COMMANDS[name] ?? []), ...conventional].filter((candidate, index, all) => candidate.length >= 3 && all.indexOf(candidate) === index);
     }
     const bin = manifest.bin;
     if (!bin) return [];

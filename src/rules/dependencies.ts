@@ -8,6 +8,8 @@ import { readFileSafe } from '../discovery';
 import { findImportCycles } from '../moduleGraph';
 import { loadTsConfigFor } from '../moduleResolution';
 import { classifyFile } from '../fileKind';
+import { loadBundlerAliases } from '../bundlerAliases';
+import { isFrameworkVirtualModule } from '../frameworkConventions';
 import { assessRemovalRisk, collectNonImportUsage, looksLikeToolExtension, packageNameFromSpecifier } from '../dependencyUsage';
 
 /** Files that run installed executables by name: CI workflows, git hooks, Makefiles, Dockerfiles, shell scripts. */
@@ -268,6 +270,7 @@ export function runDependencyRules(context: RuleContext): Finding[] {
         const reported = new Set<string>();
         const workspaceNames = new Set(packages.map((pkg) => pkg.name).filter((name): name is string => !!name));
         const mappedSpecifiers = loadImportMapSpecifiers(projectRoot);
+        const isBundlerAlias = loadBundlerAliases(projectRoot, [...context.allFiles, ...context.textFiles]);
         for (const [file, imports] of moduleGraph.importsByFile) {
             const pkg = ownerOf(file);
             // Examples, benchmarks and fixtures are self-contained snippets with their own (or no) manifest.
@@ -279,6 +282,7 @@ export function runDependencyRules(context: RuleContext): Finding[] {
                 if (importInfo.isRelative || importInfo.resolved) continue;
                 const usedName = packageNameFromSpecifier(importInfo.specifier);
                 if (isNonPackageSpecifier(importInfo.specifier) || importInfo.isPathAlias || mappedSpecifiers.has(usedName) || mappedSpecifiers.has(importInfo.specifier)) continue;
+                if (isBundlerAlias(importInfo.specifier) || isFrameworkVirtualModule(importInfo.specifier, declared)) continue;
                 // A package may import itself by name, and workspace siblings are linked rather than installed.
                 if (workspaceNames.has(usedName)) continue;
                 // `import type { X } from 'mdx/types'` is typed by @types/mdx, which is the package that is declared.
