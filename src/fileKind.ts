@@ -55,6 +55,7 @@ const RULE_SCOPE: Record<string, Scope> = {
     // committed in a test file is still a leaked key.
     SEC002: 'runtime', SEC003: 'runtime', SEC004: 'runtime', SEC005: 'runtime', SEC006: 'runtime',
     SEC007: 'runtime', SEC008: 'runtime', SEC009: 'runtime', SEC010: 'runtime',
+    SEC011: 'runtime', SEC012: 'runtime', SEC013: 'runtime', SEC014: 'runtime',
     DEP003: 'production'
 };
 

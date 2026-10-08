@@ -134,7 +134,7 @@ Design principle carried over from the project's PRD (`devkit-slop-scanner-final
 | Redundant logic | `REDUNDANT001`–`REDUNDANT002` | [`src/rules/redundancy.ts`](src/rules/redundancy.ts) |
 | TypeScript safety | `TS001`–`TS003` | [`src/rules/typescript.ts`](src/rules/typescript.ts) |
 | JavaScript hygiene | `JS001`–`JS002` | [`src/rules/javascript.ts`](src/rules/javascript.ts) |
-| Security | `SEC001`–`SEC010` (SEC006 reserved) | [`src/rules/security.ts`](src/rules/security.ts) |
+| Security | `SEC001`–`SEC014` (SEC006 reserved) | [`src/rules/security.ts`](src/rules/security.ts) |
 | Architecture | `ARCH001` | [`src/rules/architecture.ts`](src/rules/architecture.ts) |
 | Hygiene | `HYGIENE001`–`HYGIENE004` | [`src/rules/hygiene.ts`](src/rules/hygiene.ts) |
 
@@ -317,6 +317,25 @@ Each finding is weighted by `severity × confidence` ([`src/scoring.ts`](src/sco
 - **Filters** (`--category`, `--severity`) only narrow the findings that are displayed. Scores and `--min-score` always use the whole repository.
 - **Default output** lists only findings worth acting on: HIGH or CERTAIN confidence, from a rule whose measured accuracy is at least 85% (once it has 10+ labels). HIGH/CRITICAL security findings at MEDIUM confidence are kept, because hiding a probable injection would make a vulnerable repository look clean. `--all` lists everything; `--audit` also lists findings in tests, examples, benchmarks and fixtures. Scores, `--min-score` and the hidden count are unaffected. `--fail-on` gates on the findings that are listed.
 - A scan that analyzes zero JS/TS files prints a warning and always fails `--min-score`.
+
+## Taint tracking
+
+Security findings are not only pattern matches. DevKit follows request-controlled data (Express/Fastify `req.*`, Koa `ctx.*`, Hono `c.req.*()`, Next `request.json()`, NestJS `@Body()`/`@Query()`/`@Param()`/`@Headers()` parameters, and `process.argv`) through variables, destructuring, templates, concatenation and `path.join`, and across function calls (including other files) to the calls where it does damage:
+
+| Sink | Rule |
+| --- | --- |
+| `exec`/`execSync` (child_process), `spawn(..., { shell: true })` | `SEC003` |
+| `eval`, `new Function`, `vm.run*` | `SEC002` |
+| `fs.*` and `res.sendFile/download` | `SEC009` |
+| `query`/`execute`/`raw`/`$queryRawUnsafe` | `SEC008` |
+| `fetch`, `axios`, `got`, `http(s).get` (the tainted part must choose the host) | `SEC013` |
+| `res.redirect`, `c.redirect`, `NextResponse.redirect`, `Location` headers | `SEC012` |
+| `new RegExp(x)` | `SEC014` |
+| `target[a][b] = v` with a request key, lodash `merge`/`set`, `deepmerge` | `SEC011` |
+
+A flow is stopped by a known cleaning step, and each step only counts for the sinks it protects: `parseInt`/`Number`, schema validation (`schema.parse`, zod), `path.basename` and `encodeURIComponent` (paths and URLs), SQL escapers, shell escapers, regex escapers, and checks that exit early: an allowlist (`LIST.includes(x)`), a format regex, `x.startsWith(root)` after `path.resolve`, `path.relative(root, x).startsWith('..')`, a `new URL(x).origin` comparison, or a relative-path test (`startsWith('/') && !startsWith('//')`). Where taint tracking shows a pattern-based finding is a false alarm because the value was cleaned, the pattern finding is dropped; where both agree, the finding becomes high confidence and names the flow.
+
+Limits: it is function-level, not whole-program. A validator is trusted by name (`isAllowed(x)`, `validateX(x)`), so a flawed allowlist is not detected. A request value validated by an earlier lookup (`map.get(key)` returning null) is still reported, at lower confidence when fixed text surrounds it. NoSQL operators, template injection and XSS are not covered.
 
 ## Output formats
 

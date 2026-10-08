@@ -97,6 +97,18 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Taint tracking** (#8: T1-T3). Request inputs (Express, Koa, Hono, Next,
+  NestJS parameter decorators, `process.argv`) are followed through variables,
+  templates, destructuring, helper functions and across files to command
+  execution, `eval`, filesystem paths, SQL, `fetch`/`axios`, redirects,
+  `new RegExp` and prototype pollution. Known cleaning steps (numeric parsing,
+  schema validation, `path.basename`, escapers, allowlist and containment checks
+  that exit early) stop a flow per sink kind. Four new rules: `SEC011`
+  prototype pollution, `SEC012` open redirect, `SEC013` SSRF and `SEC014`
+  regular expressions built from request data. Where a pattern-based finding
+  and a flow agree, one finding remains at high confidence; where the flow
+  shows the value was cleaned, the pattern finding is dropped.
+
 - **Adoption features** (#8: A1-A5).
   - `devkit scan --since <ref>` lists only findings on lines changed since a
     git ref (new files count in full). The score still covers the whole
