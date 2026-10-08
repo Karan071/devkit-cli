@@ -124,3 +124,49 @@ describe('type-aware findings without installed dependencies (R5)', () => {
         expect(scanRepository(dir).coverage?.warnings).toBeUndefined();
     });
 });
+
+describe('DEP001: packages referenced by a node_modules path', () => {
+    it('counts a package named in angular.json styles and in a build script', () => {
+        dir = makeFixture({
+            'package.json': pkg({ dependencies: { 'font-mfizz': '^2', harfbuzzjs: '^0.3', 'left-pad': '^1' } }),
+            'angular.json': JSON.stringify({ projects: { app: { architect: { build: { options: { styles: ['node_modules/font-mfizz/dist/font-mfizz.css'] } } } } } }),
+            'scripts/build.js': `module.exports = { pkg: '../node_modules/harfbuzzjs' };\n`,
+            'src/index.ts': 'export const a = 1;\n'
+        });
+        expect(names(findingsFor(scanRepository(dir).findings, 'DEP001'))).toEqual(['left-pad']);
+    });
+});
+
+describe('DEP001: MDX imports and CSS preprocessors', () => {
+    it('counts a package imported at the top of an MDX document, but not one shown in a code fence', () => {
+        dir = makeFixture({
+            'package.json': pkg({ dependencies: { 'react-tweet': '^3', 'only-in-docs': '^1' } }),
+            'blog/post.mdx': "import { Tweet } from 'react-tweet';\n\n<Tweet id=\"1\" />\n\n```js\nimport x from 'only-in-docs';\n```\n",
+            'src/index.ts': 'export const a = 1;\n'
+        });
+        expect(names(findingsFor(scanRepository(dir).findings, 'DEP001'))).toEqual(['only-in-docs']);
+    });
+
+    it('treats sass as used when .scss files exist, and less only for .less files', () => {
+        dir = makeFixture({
+            'package.json': pkg({ devDependencies: { sass: '^1', less: '^4', stylus: '^0.6' } }),
+            'src/styles.scss': '$c: red;\n.a { color: $c; }\n',
+            'src/index.ts': 'export const a = 1;\n'
+        });
+        expect(names(findingsFor(scanRepository(dir).findings, 'DEP001'))).toEqual(['less', 'stylus']);
+    });
+});
+
+describe('DEP001: implied dependencies', () => {
+    it('treats tslib as used in an Angular project and a scoped plugin as used with its tool', () => {
+        dir = makeFixture({
+            'package.json': pkg({
+                scripts: { size: 'size-limit' },
+                dependencies: { '@angular/core': '^18', tslib: '^2' },
+                devDependencies: { 'size-limit': '^11', '@size-limit/file': '^11', '@other/plugin-x': '^1', 'left-pad': '^1' }
+            }),
+            'src/index.ts': `import { Component } from '@angular/core';\nexport const c = Component;\n`
+        });
+        expect(names(findingsFor(scanRepository(dir).findings, 'DEP001'))).toEqual(['@other/plugin-x', 'left-pad']);
+    });
+});

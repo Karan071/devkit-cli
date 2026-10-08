@@ -168,3 +168,58 @@ describe('DEAD010: explanation (F8)', () => {
         expect(finding.description).toContain('framework entry convention');
     });
 });
+
+describe('DEAD010: files read by a path assembled at runtime', () => {
+    const app = (read: string) => ({
+        'package.json': pkg({ private: true, main: 'src/app.ts' }),
+        'src/app.ts': `import fs from 'node:fs';\nexport function load(key: string) {\n    return ${read};\n}\n`,
+        'data/snippets/a.ts': 'export const a = 1;\n',
+        'data/snippets/b.ts': 'export const b = 1;\n',
+        'src/orphan.ts': 'export const o = 1;\n'
+    });
+
+    it('treats every file in the directory as referenced, and no others', () => {
+        const found = unusedFiles(app("fs.readFileSync('./data/snippets/' + key + '.ts', 'utf8')"));
+        expect(paths(found)).toEqual(['src/orphan.ts']);
+    });
+
+    it('also understands template literals', () => {
+        const found = unusedFiles(app('fs.readFileSync(`data/snippets/${key}.ts`, \'utf8\')'));
+        expect(paths(found)).toEqual(['src/orphan.ts']);
+    });
+
+    it('ignores a concatenation that is not a filesystem call', () => {
+        const found = unusedFiles(app("'./data/snippets/' + key"));
+        expect(paths(found)).toEqual(['data/snippets/a.ts', 'data/snippets/b.ts', 'src/orphan.ts']);
+    });
+});
+
+describe('vendored code and static assets', () => {
+    it('is not judged as the project\'s own code', () => {
+        dir = makeFixture({
+            'package.json': pkg({ private: true, main: 'src/app.ts' }),
+            'src/app.ts': 'export const a = 1;\n',
+            'src/assets/lib/three.js': 'var THREE = {};\nvar helper = function () { return 1 };\n',
+            'vendor/legacy.ts': 'export function unusedLegacy() {\n    var x = 1;\n    return x;\n}\n'
+        });
+        const summary = scanRepository(dir, () => undefined, { includeNonProduction: true });
+        const findings = summary.findings.filter((finding) => finding.file.startsWith('src/assets/') || finding.file.startsWith('vendor/'));
+        // They are listed only because includeNonProduction was asked for, and they cost nothing.
+        expect(summary.coverage?.nonProductionFindingsUnscored).toBe(findings.length);
+        const quiet = scanRepository(dir);
+        expect(quiet.findings.filter((finding) => finding.file.startsWith('src/assets/') || finding.file.startsWith('vendor/'))).toHaveLength(0);
+    });
+});
+
+describe('DEAD010: Docusaurus @site imports', () => {
+    it('resolves @site/... to the site package, so the component it names is used', () => {
+        const found = unusedFiles({
+            'package.json': pkg({ private: true, workspaces: ['site'] }),
+            'site/package.json': pkg({ name: 'site', private: true, dependencies: { '@docusaurus/core': '^3' } }),
+            'site/src/pages/index.tsx': `import Features from '@site/src/components/Homepage';\nexport default Features;\n`,
+            'site/src/components/Homepage/index.js': 'export default function Homepage() { return null; }\n',
+            'site/src/components/Orphan.js': 'export default function Orphan() { return null; }\n'
+        });
+        expect(paths(found)).toEqual(['site/src/components/Orphan.js']);
+    });
+});

@@ -215,3 +215,22 @@ describe('SEC008 SQL call patterns (G5) and query variables (G6)', () => {
         expect(sql(source)).toHaveLength(0);
     });
 });
+
+describe('translated text and public search keys', () => {
+    it('does not treat a sentence key, non-ASCII prose or a hyphenated label as a credential', () => {
+        const found = secrets({
+            'i18n/ja.json': JSON.stringify({ 'Amy decided to strengthen her password.': 'チャレンジの説明には、パスワード強化方法に関する手がかりがあります。' }),
+            'i18n/es.json': JSON.stringify({ LABEL_PASSWORD: 'Contraseña', LABEL_TWO_FACTOR_TOKEN: 'Zwoifaktor-Authentisierungs-Token' }),
+            'i18n/real.json': JSON.stringify({ dbPassword: 'Sup3rS3cr3t!Passw0rd2024' })
+        });
+        expect(found.map((finding) => finding.file)).toEqual(['i18n/real.json']);
+    });
+
+    it('does not report the search-only key of an Algolia DocSearch config, but still reports another apiKey', () => {
+        const found = secrets({
+            'docusaurus.config.js': `module.exports = { algolia: { appId: 'ABC', apiKey: 'ed8b3896f8e3e2b421e4c38834b915a8', indexName: 'docs' } };\n`,
+            'src/client.ts': `export const options = { apiKey: 'ed8b3896f8e3e2b421e4c38834b915a8' };\n`
+        });
+        expect(found.map((finding) => finding.file)).toEqual(['src/client.ts']);
+    });
+});
