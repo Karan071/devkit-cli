@@ -134,7 +134,7 @@ function resolveWithinPackage(pkg: WorkspacePackage, subpath: string, fileSet: S
  * Resolves `@scope/pkg` and `@scope/pkg/sub.js` to a source file when the package is a workspace member, by
  * name, `exports` map and package layout. Without installed links in `node_modules` the compiler cannot do this.
  */
-export function createWorkspaceResolver(projectRoot: string, files: string[], fileSet: Set<string>): (specifier: string) => string | null {
+export function createWorkspaceResolver(projectRoot: string, files: string[], fileSet: Set<string>): (specifier: string, fromFile?: string) => string | null {
     const byName = new Map<string, WorkspacePackage>();
     for (const root of findPackageRoots(projectRoot, files)) {
         try {
@@ -144,9 +144,15 @@ export function createWorkspaceResolver(projectRoot: string, files: string[], fi
             // An unreadable manifest names no workspace package.
         }
     }
-    if (byName.size === 0) return () => null;
+    const roots = findPackageRoots(projectRoot, files).sort((a, b) => b.length - a.length);
 
-    return (specifier) => {
+    return (specifier, fromFile) => {
+        // Docusaurus: `@site/src/x` is the site's own package directory, whichever workspace member the site is.
+        if (specifier.startsWith('@site/') && fromFile) {
+            const owner = roots.find((root) => fromFile.startsWith(root + path.sep)) ?? projectRoot;
+            return fileCandidates(path.join(owner, specifier.slice('@site/'.length)), fileSet);
+        }
+        if (byName.size === 0) return null;
         if (specifier.startsWith('.') || specifier.startsWith('/') || specifier.startsWith('#') || /^[a-z][a-z0-9+.-]*:/i.test(specifier)) return null;
         const name = packageNameFromSpecifier(specifier);
         const pkg = byName.get(name);

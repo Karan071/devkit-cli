@@ -8,6 +8,8 @@ import type { DevkitConfig } from './config';
 import { isFrameworkEntryFile } from './frameworkConventions';
 import { createResolutionContext, matchesPathAlias, resolveSpecifier, type SpecifierKind } from './moduleResolution';
 import { createWorkspaceResolver, findPackageRoots, sourceCandidatesForBuildOutput } from './workspaceResolution';
+import { FILE_FUNCTION_NAMES } from './rules/securityHelpers';
+import { mdxImportSpecifiers } from './mdxImports';
 
 // Tool config files and task-runner entry files (vite.config.ts, .eslintrc.js, gulpfile.js, karma.conf.js, ...).
 const TOOL_CONFIG_FILE = /(?:^|\/)(?:(?:[\w.-]+\.(?:config|conf)|\.[\w-]+rc)\.[cm]?[jt]sx?|(?:gulpfile|gruntfile|jakefile|fastfile)(?:\.[\w-]+)?\.[cm]?[jt]sx?)$/i;
@@ -43,10 +45,45 @@ export interface ModuleGraph {
     entryPoints: Set<string>;
     fileSet: Set<string>;
     dynamicRequireHints: Set<string>;
+    /** Directories whose files are read by a path assembled at runtime (see collectFilesystemPrefixes). */
+    dynamicPathDirectories: Set<string>;
     /** Files made only of `export ... from` statements: they re-export other modules and define nothing themselves. */
     barrelFiles: Set<string>;
     /** Package roots (longest first) with whether each is published: not private, and declares `exports` or `files`. */
     packages: Array<{ root: string; published: boolean }>;
+}
+
+const FILE_READ_FUNCTIONS = new Set([...FILE_FUNCTION_NAMES, 'readdir', 'readdirSync', 'existsSync', 'exists', 'lstat', 'lstatSync', 'copyFile', 'copyFileSync', 'sendFile', 'createReadStream']);
+const DIRECTORY_PREFIX = /^(?:\.{1,2}\/)?[\w@~.-]+(?:\/[\w@~.-]+)*\/$/;
+
+/**
+ * Directories that code names as the start of a path built at runtime inside a filesystem call:
+ * `fs.readFile('./data/snippets/' + key + '.ts')`. Every file in such a directory is read by name, so none of
+ * them is unused even though no import mentions it.
+ */
+function collectFilesystemPrefixes(sourceFile: ts.SourceFile, file: string, projectRoot: string, into: string[]): void {
+    const prefixOf = (expression: ts.Node): string | undefined => {
+        if (ts.isBinaryExpression(expression) && expression.operatorToken.kind === ts.SyntaxKind.PlusToken) return prefixOf(expression.left);
+        if (ts.isStringLiteral(expression)) return expression.text;
+        if (ts.isTemplateExpression(expression)) return expression.head.text;
+        return undefined;
+    };
+    forEachNode(sourceFile, (node) => {
+        if (!ts.isCallExpression(node)) return;
+        const name = ts.isPropertyAccessExpression(node.expression) ? node.expression.name.text : ts.isIdentifier(node.expression) ? node.expression.text : undefined;
+        const argument = node.arguments[0];
+        if (!name || !FILE_READ_FUNCTIONS.has(name) || !argument) return;
+        const dynamic = (ts.isBinaryExpression(argument) && argument.operatorToken.kind === ts.SyntaxKind.PlusToken) || ts.isTemplateExpression(argument);
+        const prefix = dynamic ? prefixOf(argument) : undefined;
+        if (!prefix) return;
+        // `'data/' + x` ends in a separator; `'./data/x-' + y` names a file prefix, not a directory.
+        const directory = prefix.endsWith('/') ? prefix : prefix.slice(0, prefix.lastIndexOf('/') + 1);
+        if (!DIRECTORY_PREFIX.test(directory)) return;
+        for (const base of [path.dirname(file), projectRoot]) {
+            const resolved = path.resolve(base, directory);
+            if (resolved !== projectRoot && fs.existsSync(resolved)) into.push(resolved);
+        }
+    });
 }
 
 function extractImportsAndExports(
@@ -55,12 +92,13 @@ function extractImportsAndExports(
     sourceFile: ts.SourceFile,
     fileSet: Set<string>,
     resolutionContext: ReturnType<typeof createResolutionContext>,
-    resolveWorkspace: (specifier: string) => string | null
-): { imports: ImportInfo[]; exports: ExportInfo[]; reExportAllTargets: string[]; dynamicRequireHints: string[]; isBarrel: boolean } {
+    resolveWorkspace: (specifier: string, fromFile?: string) => string | null
+): { imports: ImportInfo[]; exports: ExportInfo[]; reExportAllTargets: string[]; dynamicRequireHints: string[]; isBarrel: boolean; pathPrefixes: string[] } {
     const imports: ImportInfo[] = [];
     const exports: ExportInfo[] = [];
     const reExportAllTargets: string[] = [];
     const dynamicRequireHints: string[] = [];
+    const pathPrefixes: string[] = [];
 
     const addImport = (
         specifier: string,
@@ -70,7 +108,7 @@ function extractImportsAndExports(
     ): ImportInfo => {
         const info: ImportInfo = {
             specifier,
-            resolved: resolveSpecifier(file, specifier, kind, fileSet, resolutionContext) ?? resolveWorkspace(specifier),
+            resolved: resolveSpecifier(file, specifier, kind, fileSet, resolutionContext) ?? resolveWorkspace(specifier, file),
             isRelative: specifier.startsWith('.'),
             namedImports: details.namedImports ?? [],
             hasDefaultImport: details.hasDefaultImport ?? false,
@@ -210,7 +248,9 @@ function extractImportsAndExports(
     const isBarrel = sourceFile.statements.length > 0 &&
         sourceFile.statements.every((statement) => ts.isExportDeclaration(statement) && !!statement.moduleSpecifier);
 
-    return { imports, exports, reExportAllTargets, dynamicRequireHints, isBarrel };
+    collectFilesystemPrefixes(sourceFile, file, projectRoot, pathPrefixes);
+
+    return { imports, exports, reExportAllTargets, dynamicRequireHints, isBarrel, pathPrefixes };
 }
 
 // package.json fields that cannot be a source-file reference (or are handled explicitly elsewhere).
@@ -226,26 +266,6 @@ const SOURCE_PATH_REFERENCE = /(?:^|[\s"'`=:(,[])((?:\.{1,2}\/)?[\w@~$.-]+(?:\/[
 const QUOTED_RELATIVE_REFERENCE = /["'`](\.{1,2}\/[^"'`\n]+)["'`]/g;
 const DOCUMENTATION_TEXT = /\.(?:md|mdx|markdown|rst|txt|adoc)$/i;
 const MDX_FILE = /\.mdx?$/i;
-const MDX_IMPORT = /^\s*import\s+(?:[^'"\n]*?\s+from\s+)?['"]([^'"\n]+)['"]/;
-
-/** Module specifiers of the top-level `import` lines of an MDX document, ignoring code fences that merely show an import. */
-function mdxImportSpecifiers(text: string): string[] {
-    const specifiers: string[] = [];
-    let fence: string | null = null;
-    for (const line of text.split(/\r\n|\r|\n/)) {
-        const marker = line.match(/^\s*(`{3,}|~{3,})/)?.[1];
-        if (marker) {
-            if (fence === null) fence = marker[0];
-            else if (marker[0] === fence) fence = null;
-            continue;
-        }
-        if (fence !== null) continue;
-        const specifier = line.match(MDX_IMPORT)?.[1];
-        if (specifier) specifiers.push(specifier);
-    }
-    return specifiers;
-}
-
 /** The directory of the closest package.json above `file`, which is what `@site` stands for in Docusaurus. */
 function nearestPackageDir(projectRoot: string, file: string): string {
     for (let dir = path.dirname(file); dir.startsWith(projectRoot); dir = path.dirname(dir)) {
@@ -487,6 +507,7 @@ export function buildModuleGraph(
     const reverseEdges = new Map<string, Set<string>>();
     const reExportAllTargets = new Map<string, Set<string>>();
     const dynamicRequireHints = new Set<string>();
+    const dynamicPathDirectories = new Set<string>();
     const resolutionContext = createResolutionContext(projectRoot);
     const resolveWorkspace = createWorkspaceResolver(projectRoot, files, fileSet);
     const barrelFiles = new Set<string>();
@@ -494,9 +515,10 @@ export function buildModuleGraph(
     for (const file of files) {
         const text = readFileSafe(file);
         const sourceFile = parseSourceFile(file, text);
-        const { imports, exports, reExportAllTargets: reExportTargets, dynamicRequireHints: hints, isBarrel } = extractImportsAndExports(file, projectRoot, sourceFile, fileSet, resolutionContext, resolveWorkspace);
+        const { imports, exports, reExportAllTargets: reExportTargets, dynamicRequireHints: hints, isBarrel, pathPrefixes } = extractImportsAndExports(file, projectRoot, sourceFile, fileSet, resolutionContext, resolveWorkspace);
         if (isBarrel) barrelFiles.add(file);
         hints.forEach((hint) => dynamicRequireHints.add(hint));
+        pathPrefixes.forEach((prefix) => dynamicPathDirectories.add(prefix));
 
         importsByFile.set(file, imports);
         exportsByFile.set(file, exports);
@@ -524,8 +546,11 @@ export function buildModuleGraph(
     }
 
     const entryPoints = resolveEntryPoints(projectRoot, files, packageJson, config, textFiles);
+    for (const file of files) {
+        for (const directory of dynamicPathDirectories) if (file.startsWith(directory + path.sep)) { entryPoints.add(file); break; }
+    }
 
-    return { importsByFile, exportsByFile, edges, reverseEdges, reExportAllTargets, entryPoints, fileSet, dynamicRequireHints, barrelFiles, packages: describePackages(projectRoot, files, packageJson) };
+    return { importsByFile, exportsByFile, edges, reverseEdges, reExportAllTargets, entryPoints, fileSet, dynamicRequireHints, dynamicPathDirectories, barrelFiles, packages: describePackages(projectRoot, files, packageJson) };
 }
 
 /**
