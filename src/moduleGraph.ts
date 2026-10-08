@@ -6,7 +6,8 @@ import { parseSourceFile } from './ast/parse';
 import { forEachNode, lineAndColumn } from './ast/walk';
 import type { DevkitConfig } from './config';
 import { isFrameworkEntryFile } from './frameworkConventions';
-import { createResolutionContext, loadTsConfigFor, matchesPathAlias, resolveSpecifier, type SpecifierKind } from './moduleResolution';
+import { createResolutionContext, matchesPathAlias, resolveSpecifier, type SpecifierKind } from './moduleResolution';
+import { createWorkspaceResolver, findPackageRoots, sourceCandidatesForBuildOutput } from './workspaceResolution';
 
 // Tool config files and task-runner entry files (vite.config.ts, .eslintrc.js, gulpfile.js, karma.conf.js, ...).
 const TOOL_CONFIG_FILE = /(?:^|\/)(?:(?:[\w.-]+\.(?:config|conf)|\.[\w-]+rc)\.[cm]?[jt]sx?|(?:gulpfile|gruntfile|jakefile|fastfile)(?:\.[\w-]+)?\.[cm]?[jt]sx?)$/i;
@@ -42,6 +43,10 @@ export interface ModuleGraph {
     entryPoints: Set<string>;
     fileSet: Set<string>;
     dynamicRequireHints: Set<string>;
+    /** Files made only of `export ... from` statements: they re-export other modules and define nothing themselves. */
+    barrelFiles: Set<string>;
+    /** Package roots (longest first) with whether each is published: not private, and declares `exports` or `files`. */
+    packages: Array<{ root: string; published: boolean }>;
 }
 
 function extractImportsAndExports(
@@ -49,8 +54,9 @@ function extractImportsAndExports(
     projectRoot: string,
     sourceFile: ts.SourceFile,
     fileSet: Set<string>,
-    resolutionContext: ReturnType<typeof createResolutionContext>
-): { imports: ImportInfo[]; exports: ExportInfo[]; reExportAllTargets: string[]; dynamicRequireHints: string[] } {
+    resolutionContext: ReturnType<typeof createResolutionContext>,
+    resolveWorkspace: (specifier: string) => string | null
+): { imports: ImportInfo[]; exports: ExportInfo[]; reExportAllTargets: string[]; dynamicRequireHints: string[]; isBarrel: boolean } {
     const imports: ImportInfo[] = [];
     const exports: ExportInfo[] = [];
     const reExportAllTargets: string[] = [];
@@ -64,7 +70,7 @@ function extractImportsAndExports(
     ): ImportInfo => {
         const info: ImportInfo = {
             specifier,
-            resolved: resolveSpecifier(file, specifier, kind, fileSet, resolutionContext),
+            resolved: resolveSpecifier(file, specifier, kind, fileSet, resolutionContext) ?? resolveWorkspace(specifier),
             isRelative: specifier.startsWith('.'),
             namedImports: details.namedImports ?? [],
             hasDefaultImport: details.hasDefaultImport ?? false,
@@ -164,7 +170,10 @@ function extractImportsAndExports(
     const dynamicDir = path.relative(projectRoot, path.dirname(file)).replace(/\\/g, '/') || '.';
     forEachNode(sourceFile, (node) => {
         if (!ts.isCallExpression(node)) return;
-        const isRequire = ts.isIdentifier(node.expression) && node.expression.text === 'require';
+        // `require.resolve('pkg/file.js')` names a file as surely as `require('pkg/file.js')`.
+        const isRequireResolve = ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === 'resolve' &&
+            ts.isIdentifier(node.expression.expression) && node.expression.expression.text === 'require';
+        const isRequire = isRequireResolve || (ts.isIdentifier(node.expression) && node.expression.text === 'require');
         const isDynamicImport = node.expression.kind === ts.SyntaxKind.ImportKeyword;
         if (!isRequire && !isDynamicImport) return;
         const kind: SpecifierKind = isRequire ? 'require' : 'dynamicImport';
@@ -197,7 +206,11 @@ function extractImportsAndExports(
         addImport(argument.text, kind, lineAndColumn(sourceFile, node.getStart()).line, { namedImports, hasNamespaceImport, isSideEffectOnly });
     });
 
-    return { imports, exports, reExportAllTargets, dynamicRequireHints };
+    // A barrel only forwards other modules: every statement is `export ... from '...'`.
+    const isBarrel = sourceFile.statements.length > 0 &&
+        sourceFile.statements.every((statement) => ts.isExportDeclaration(statement) && !!statement.moduleSpecifier);
+
+    return { imports, exports, reExportAllTargets, dynamicRequireHints, isBarrel };
 }
 
 // package.json fields that cannot be a source-file reference (or are handled explicitly elsewhere).
@@ -212,6 +225,35 @@ const SOURCE_PATH_REFERENCE = /(?:^|[\s"'`=:(,[])((?:\.{1,2}\/)?[\w@~$.-]+(?:\/[
 // A quoted relative path inside a tool's own config (`preset: '../jest.preset.js'`, `setupFiles: ['./setup']`).
 const QUOTED_RELATIVE_REFERENCE = /["'`](\.{1,2}\/[^"'`\n]+)["'`]/g;
 const DOCUMENTATION_TEXT = /\.(?:md|mdx|markdown|rst|txt|adoc)$/i;
+const MDX_FILE = /\.mdx?$/i;
+const MDX_IMPORT = /^\s*import\s+(?:[^'"\n]*?\s+from\s+)?['"]([^'"\n]+)['"]/;
+
+/** Module specifiers of the top-level `import` lines of an MDX document, ignoring code fences that merely show an import. */
+function mdxImportSpecifiers(text: string): string[] {
+    const specifiers: string[] = [];
+    let fence: string | null = null;
+    for (const line of text.split(/\r\n|\r|\n/)) {
+        const marker = line.match(/^\s*(`{3,}|~{3,})/)?.[1];
+        if (marker) {
+            if (fence === null) fence = marker[0];
+            else if (marker[0] === fence) fence = null;
+            continue;
+        }
+        if (fence !== null) continue;
+        const specifier = line.match(MDX_IMPORT)?.[1];
+        if (specifier) specifiers.push(specifier);
+    }
+    return specifiers;
+}
+
+/** The directory of the closest package.json above `file`, which is what `@site` stands for in Docusaurus. */
+function nearestPackageDir(projectRoot: string, file: string): string {
+    for (let dir = path.dirname(file); dir.startsWith(projectRoot); dir = path.dirname(dir)) {
+        if (fs.existsSync(path.join(dir, 'package.json'))) return dir;
+        if (dir === projectRoot) break;
+    }
+    return projectRoot;
+}
 
 /**
  * Source files that other tooling points at by path, so no import ever mentions them: the `main` of an Nx
@@ -231,6 +273,14 @@ function resolveConfigReferences(projectRoot: string, files: string[], textFiles
     };
 
     for (const file of textFiles) {
+        if (MDX_FILE.test(file)) {
+            // Docusaurus and other MDX pipelines compile `.md` files as MDX too, so their imports are real uses.
+            for (const specifier of mdxImportSpecifiers(readFileSafe(file))) {
+                if (specifier.startsWith('@site/')) addReference([nearestPackageDir(projectRoot, file)], specifier.slice('@site/'.length));
+                else if (specifier.startsWith('.')) addReference([path.dirname(file)], specifier);
+            }
+            continue;
+        }
         if (DOCUMENTATION_TEXT.test(file)) continue;
         const text = readFileSafe(file);
         if (!text || text.length > 500_000) continue;
@@ -243,41 +293,6 @@ function resolveConfigReferences(projectRoot: string, files: string[], textFiles
         const text = readFileSafe(file);
         for (const match of text.matchAll(QUOTED_RELATIVE_REFERENCE)) addReference([path.dirname(file)], match[1]);
     }
-}
-
-/** Output folders a library's `exports`/`main` typically point into, mapped back to the sources they were built from. */
-const BUILD_OUTPUT_EXTENSIONS = /(?:\.d\.[cm]?ts|\.[cm]?jsx?)$/;
-
-function sourceCandidatesForBuildOutput(packageRoot: string, relativePath: string, fileSet: Set<string>): string[] {
-    const normalized = relativePath.replace(/^\.\//, '').replace(/\\/g, '/');
-    if (!BUILD_OUTPUT_EXTENSIONS.test(normalized)) return [];
-    const withoutExtension = normalized.replace(BUILD_OUTPUT_EXTENSIONS, '');
-
-    const config = loadTsConfigFor(packageRoot);
-    const outDir = config?.options.outDir ? path.relative(packageRoot, config.options.outDir).replace(/\\/g, '/') : null;
-    const rootDir = config?.options.rootDir ? path.relative(packageRoot, config.options.rootDir).replace(/\\/g, '/') : null;
-
-    const bases = new Set<string>();
-    // The project's own mapping first: <outDir>/x.js was built from <rootDir>/x.ts.
-    if (outDir && withoutExtension.startsWith(`${outDir}/`)) bases.add(`${rootDir && rootDir !== '.' ? `${rootDir}/` : ''}${withoutExtension.slice(outDir.length + 1)}`);
-    // Otherwise assume the conventional layout: the first folder is the output, sources live in src/ or the package root.
-    const [, ...rest] = withoutExtension.split('/');
-    if (rest.length > 0) {
-        bases.add(`src/${rest.join('/')}`);
-        bases.add(rest.join('/'));
-    }
-    bases.add(`src/${withoutExtension}`);
-    bases.add(withoutExtension);
-
-    const found: string[] = [];
-    for (const base of bases) {
-        const absolute = path.resolve(packageRoot, base);
-        for (const extension of SOURCE_EXTENSIONS) {
-            if (fileSet.has(absolute + extension)) found.push(absolute + extension);
-            if (fileSet.has(path.join(absolute, `index${extension}`))) found.push(path.join(absolute, `index${extension}`));
-        }
-    }
-    return found;
 }
 
 function resolvePackageEntryPoints(
@@ -303,6 +318,24 @@ function resolvePackageEntryPoints(
         }
         // `main: dist/index.js` while only src/index.ts is checked in.
         if (!found) for (const source of sourceCandidatesForBuildOutput(packageRoot, relativePath, fileSet)) entryPoints.add(source);
+    };
+
+    // `"./*": "./dist/*.js"` publishes every file under the pattern. Build output is not checked in, so each
+    // source file is compared by the output paths it would produce (src/a/b.ts -> dist/a/b.js).
+    const addWildcardTarget = (pattern: string): void => {
+        if (!pattern.startsWith('./')) return;
+        const escaped = pattern.slice(2).replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
+        const matcher = new RegExp(`^${escaped}$`);
+        const outputFolder = pattern.slice(2).split('/')[0];
+        for (const file of files) {
+            const relative = path.relative(packageRoot, file).replace(/\\/g, '/');
+            if (relative.startsWith('..') || path.isAbsolute(relative)) continue;
+            const stem = relative.replace(/\.[cm]?[jt]sx?$/, '');
+            const unrooted = stem.replace(/^src\//, '');
+            const guesses = [relative, ...['', '.d'].flatMap((marker) => ['.js', '.mjs', '.cjs', '.ts', '.mts', '.cts'].flatMap((extension) =>
+                [`${outputFolder}/${unrooted}${marker}${extension}`, `${stem}${marker}${extension}`]))];
+            if (guesses.some((guess) => matcher.test(guess))) entryPoints.add(file);
+        }
     };
 
     const scanStringForPaths = (value: string): void => {
@@ -364,7 +397,8 @@ function resolvePackageEntryPoints(
 
         const addExportTargets = (value: unknown): void => {
             if (typeof value === 'string') {
-                if (value.startsWith('./')) addFromRelativePath(value.slice(2));
+                if (value.includes('*')) addWildcardTarget(value);
+                else if (value.startsWith('./')) addFromRelativePath(value.slice(2));
             } else if (value && typeof value === 'object') {
                 for (const nested of Object.values(value as Record<string, unknown>)) addExportTargets(nested);
             }
@@ -376,33 +410,15 @@ function resolvePackageEntryPoints(
             ...((packageJson.devDependencies as Record<string, string> | undefined) ?? {})
         };
         const declared = new Set(Object.keys(dependencies));
+        // A package that names no entry point of its own is still entered through src/index or main.
+        const namesEntryPoint = ['main', 'module', 'exports', 'bin', 'browser'].some((field) => packageJson[field] !== undefined);
         for (const file of files) {
             const relative = path.relative(packageRoot, file).replace(/\\/g, '/');
             if (relative.startsWith('..') || path.isAbsolute(relative)) continue;
             if (isFrameworkEntryFile(relative, declared)) entryPoints.add(file);
+            if (!namesEntryPoint && /^(?:src\/)?(?:index|main)\.[cm]?[jt]sx?$/.test(relative)) entryPoints.add(file);
         }
     }
-}
-
-/** Directories (project root and every nested package) that contain a package.json, found by walking up from each source file. */
-function findPackageRoots(projectRoot: string, files: string[]): string[] {
-    const roots = new Set<string>([projectRoot]);
-    const checked = new Map<string, boolean>();
-    for (const file of files) {
-        for (let dir = path.dirname(file); dir.startsWith(projectRoot) && dir !== projectRoot; dir = path.dirname(dir)) {
-            if (checked.has(dir)) {
-                if (checked.get(dir)) break;
-                continue;
-            }
-            const has = fs.existsSync(path.join(dir, 'package.json'));
-            checked.set(dir, has);
-            if (has) {
-                roots.add(dir);
-                break;
-            }
-        }
-    }
-    return [...roots];
 }
 
 function resolveEntryPoints(projectRoot: string, files: string[], packageJson: Record<string, unknown> | null, config: DevkitConfig, textFiles: string[]): Set<string> {
@@ -438,6 +454,25 @@ function resolveEntryPoints(projectRoot: string, files: string[], packageJson: R
     return entryPoints;
 }
 
+function describePackages(projectRoot: string, files: string[], rootJson: Record<string, unknown> | null): ModuleGraph['packages'] {
+    const published = (json: Record<string, unknown> | null): boolean => !!json && json.private !== true && (json.exports !== undefined || Array.isArray(json.files));
+    const packages = findPackageRoots(projectRoot, files).map((root) => {
+        if (root === projectRoot) return { root, published: published(rootJson) };
+        try {
+            return { root, published: published(JSON.parse(readFileSafe(path.join(root, 'package.json'))) as Record<string, unknown>) };
+        } catch {
+            return { root, published: false };
+        }
+    });
+    return packages.sort((a, b) => b.root.length - a.root.length);
+}
+
+/** Whether the file belongs to a published package, whose exports may be consumed outside this repository. */
+export function isInPublishedPackage(graph: ModuleGraph, file: string): boolean {
+    const owner = graph.packages.find(({ root }) => file === root || file.startsWith(root + path.sep));
+    return owner?.published ?? false;
+}
+
 export function buildModuleGraph(
     projectRoot: string,
     files: string[],
@@ -453,11 +488,14 @@ export function buildModuleGraph(
     const reExportAllTargets = new Map<string, Set<string>>();
     const dynamicRequireHints = new Set<string>();
     const resolutionContext = createResolutionContext(projectRoot);
+    const resolveWorkspace = createWorkspaceResolver(projectRoot, files, fileSet);
+    const barrelFiles = new Set<string>();
 
     for (const file of files) {
         const text = readFileSafe(file);
         const sourceFile = parseSourceFile(file, text);
-        const { imports, exports, reExportAllTargets: reExportTargets, dynamicRequireHints: hints } = extractImportsAndExports(file, projectRoot, sourceFile, fileSet, resolutionContext);
+        const { imports, exports, reExportAllTargets: reExportTargets, dynamicRequireHints: hints, isBarrel } = extractImportsAndExports(file, projectRoot, sourceFile, fileSet, resolutionContext, resolveWorkspace);
+        if (isBarrel) barrelFiles.add(file);
         hints.forEach((hint) => dynamicRequireHints.add(hint));
 
         importsByFile.set(file, imports);
@@ -487,7 +525,7 @@ export function buildModuleGraph(
 
     const entryPoints = resolveEntryPoints(projectRoot, files, packageJson, config, textFiles);
 
-    return { importsByFile, exportsByFile, edges, reverseEdges, reExportAllTargets, entryPoints, fileSet, dynamicRequireHints };
+    return { importsByFile, exportsByFile, edges, reverseEdges, reExportAllTargets, entryPoints, fileSet, dynamicRequireHints, barrelFiles, packages: describePackages(projectRoot, files, packageJson) };
 }
 
 /**

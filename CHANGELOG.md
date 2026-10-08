@@ -8,6 +8,24 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **Unused files and exports** (#8: F1-F8).
+  - **DEAD010/DEAD009** resolve workspace packages by name even when
+    `node_modules` links are missing: `@scope/pkg`, `@scope/pkg/sub.js`
+    (through the package's `exports` map or layout), dynamic `import()` and
+    `require.resolve()` (F1).
+  - `import` lines in `.md` and `.mdx` files count as uses, including
+    Docusaurus `@site/...` paths; an import inside a code fence does not (F2).
+  - Framework entry conventions: Docusaurus (`src/theme`, `src/pages`,
+    `src/clientModules`, `src/plugins`, `static`, `sidebars`), NestJS `main.ts`
+    and service workers (F3).
+  - Files that only re-export (barrels) are not reported as unused (F4).
+  - Files in a published package (not private, with `exports` or `files`) are
+    reported at `LOW` confidence and the finding says so (F5).
+  - Wildcard `exports` patterns such as `"./*": "./dist/*.js"` make the matching
+    sources public API (F6). Packages without `main`/`exports`/`bin` treat
+    `src/index.*` and `main.*` as entry points (F7).
+  - Unused-file findings list the checks the file failed (F8).
+
 - **Dependency rules** (#8: D1-D4, R5).
   - **DEP001** knows the executables of common tools (`typescript` → `tsc`,
     Biome, Vitest, ESLint, Prettier, tsx, tsup, turbo, rimraf, ...) when

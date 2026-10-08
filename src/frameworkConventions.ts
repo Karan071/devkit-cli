@@ -28,8 +28,27 @@ const CONVENTIONS: FrameworkConvention[] = [
         ],
         allFilesAreEntries: ['pages'],
         rootFileStems: ['middleware', 'proxy', 'instrumentation', 'instrumentation-client', 'mdx-components']
+    },
+    {
+        // Docusaurus loads swizzled theme components, pages, client modules and local plugins by location.
+        dependency: '@docusaurus/core',
+        routerDirs: [],
+        routerFileStems: [],
+        allFilesAreEntries: ['src/theme', 'src/pages', 'src/clientModules', 'src/plugins', 'static'],
+        rootFileStems: ['sidebars', 'sidebar', 'babel.config']
+    },
+    {
+        // Nest bootstraps from main.ts; nothing imports it.
+        dependency: '@nestjs/core',
+        routerDirs: [],
+        routerFileStems: [],
+        allFilesAreEntries: [],
+        rootFileStems: ['main']
     }
 ];
+
+/** Service workers are registered by URL (`navigator.serviceWorker.register('/sw.js')`), never imported. */
+const SERVICE_WORKER_FILE = /(?:^|\/)(?:service-?worker|sw|[\w-]+-sw|sw-[\w-]+|firebase-messaging-sw)\.[cm]?[jt]s$/i;
 
 const SOURCE_EXTENSION = /\.(?:[cm]?[jt]sx?|mdx)$/;
 
@@ -39,6 +58,7 @@ const SOURCE_ROOTS = ['', 'src/'];
 export function isFrameworkEntryFile(relativePath: string, dependencies: Set<string>): boolean {
     if (!SOURCE_EXTENSION.test(relativePath)) return false;
     const stem = path.posix.basename(relativePath).replace(SOURCE_EXTENSION, '');
+    if (SERVICE_WORKER_FILE.test(relativePath)) return true;
 
     for (const convention of CONVENTIONS) {
         if (!dependencies.has(convention.dependency)) continue;
