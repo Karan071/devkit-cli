@@ -37,6 +37,17 @@ See [README.md](README.md#project-layout) and [README.md](README.md#architecture
 
 Keep new rules deterministic, low false-positive, and scoped to one concern per rule ID.
 
+## Measuring accuracy
+
+Rule changes are judged against a benchmark, not by eye. See [bench/README.md](bench/README.md).
+
+```bash
+npm run bench          # catch rate on the seeded repo + per-rule accuracy
+npm run bench:check    # the CI gate
+```
+
+If you fix a false positive or close a detection gap, add a planted issue or decoy to `bench/seeded/` and update `bench/baseline.json` (`npm run bench -- --update-baseline`) in the same PR.
+
 ## Submitting a change
 
 1. Fork the repo and create a branch from `main`.

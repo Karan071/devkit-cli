@@ -6,6 +6,24 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Benchmark harness** (`bench/`, part of #8): a measurable accuracy baseline
+  that later rule changes are judged against.
+  - `bench/seeded/` is a small repo with 20 planted security/quality issues and
+    9 known-clean decoys, each tagged with the rule expected to catch (or leave
+    alone) the code. Three planted issues (G1, G2, G6) and one decoy (R2) are
+    recorded as known gaps rather than hidden.
+  - `npm run bench` reports the planted-issue catch rate and per-rule accuracy
+    (Markdown to stdout; `--json <file>` for structured output).
+  - `npm run bench:check` is the CI gate: it fails when a planted issue is
+    missed or any rule's accuracy drops more than 2 points below
+    `bench/baseline.json`.
+  - `bench/corpus.json` pins zod, hono, trpc, excalidraw, nest and date-fns to
+    fixed commits; `npm run bench:corpus` clones and scans them, and
+    `npm run bench:sample` draws a reproducible sample of findings to label by
+    hand into `bench/labels/*.jsonl`.
+
 ### Fixed
 
 False-positive reduction, validated by scanning 11 open-source repositories
