@@ -12,15 +12,15 @@ Thanks for your interest in improving DevKit. This guide covers how to set up th
 ```bash
 git clone https://github.com/Karan071/devkit-cli.git
 cd devkit-cli
-npm install
-npm run build
-npm test
+pnpm install
+pnpm run build
+pnpm test
 ```
 
 Run the CLI directly against this repository (or any other) without a build step:
 
 ```bash
-npm run dev -- scan
+pnpm run dev scan
 ```
 
 ## Project layout
@@ -32,7 +32,7 @@ See [README.md](README.md#project-layout) and [README.md](README.md#architecture
 1. Pick the category file under `src/rules/` (or create one for a new category) and add/modify the `run*Rules(context)` function.
 2. Register the rule's metadata (id, title, category, severity, confidence, docs) in `src/rules.ts`.
 3. Add test cases in `src/__tests__/`: at least one snippet that should trigger the finding and one that should not. Use `src/__tests__/testUtils.ts` to build a minimal `RuleContext`.
-4. Run `npm test` and `npm run build`.
+4. Run `pnpm test` and `pnpm run build`.
 5. Update `README.md`'s rule table if you added a new rule ID or category.
 
 Keep new rules deterministic, low false-positive, and scoped to one concern per rule ID.
@@ -42,19 +42,19 @@ Keep new rules deterministic, low false-positive, and scoped to one concern per 
 Rule changes are judged against a benchmark, not by eye. See [bench/README.md](bench/README.md).
 
 ```bash
-npm run bench          # catch rate on the seeded repo + per-rule accuracy
-npm run bench:check    # the CI gate
+pnpm run bench        # catch rate on the seeded repo + per-rule accuracy
+pnpm run bench:check  # the CI gate
 ```
 
-If you fix a false positive or close a detection gap, add a planted issue or decoy to `bench/seeded/` and update `bench/baseline.json` (`npm run bench -- --update-baseline`) in the same PR.
+If you fix a false positive or close a detection gap, add a planted issue or decoy to `bench/seeded/` and update `bench/baseline.json` (`pnpm run bench --update-baseline`) in the same PR.
 
 ## Releasing
 
 Before tagging a release, regenerate the published accuracy table and the measured accuracy that drives the default output:
 
 ```bash
-npm run bench:corpus      # clone and scan the pinned corpus (about 4 minutes)
-npm run bench:report      # writes bench/ACCURACY.md and src/ruleQuality.ts
+pnpm run bench:corpus  # clone and scan the pinned corpus (about 4 minutes)
+pnpm run bench:report  # writes bench/ACCURACY.md and src/ruleQuality.ts
 git add bench/ACCURACY.md src/ruleQuality.ts
 ```
 
@@ -62,7 +62,7 @@ git add bench/ACCURACY.md src/ruleQuality.ts
 
 1. Fork the repo and create a branch from `main`.
 2. Make your change with tests. Keep the diff focused — unrelated formatting or refactors make review harder.
-3. Run `npm run build && npm test` locally; CI runs the same checks on Node 18/20/22.
+3. Run `pnpm run build && pnpm test` locally; CI runs the same checks on Node 22/24.
 4. Open a pull request describing the problem and the fix. Reference any related issue.
 5. Be responsive to review feedback — small, iterative changes merge faster than large ones.
 

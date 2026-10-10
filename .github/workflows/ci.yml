@@ -16,26 +16,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: pnpm/action-setup@v4
+
       - name: Use Node.js ${{ matrix.node-version }}
         uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
-          cache: npm
+          cache: pnpm
 
       - name: Install dependencies
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
       - name: Build
-        run: npm run build
+        run: pnpm run build
 
       - name: Test
-        run: npm test
+        run: pnpm test
 
       - name: Type-check benchmark scripts
-        run: npm run bench:typecheck
+        run: pnpm run bench:typecheck
 
       - name: Benchmark gate (planted-issue catch rate and per-rule accuracy)
-        run: npm run bench:check
+        run: pnpm run bench:check
 
       - name: Self-scan (quality gate)
         run: node dist/cli.js scan --min-score 5

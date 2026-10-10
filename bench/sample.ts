@@ -4,7 +4,7 @@
  * judged into bench/labels/<repo>.jsonl with `verdict` set to true (real issue) or false (false
  * positive) and a short `reason`.
  *
- *   npm run bench:sample -- 30
+ *   pnpm run bench:sample 30
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -16,7 +16,7 @@ function main(): void {
     const perRule = Number(process.argv[2] ?? 30);
     if (!Number.isInteger(perRule) || perRule < 1) throw new Error('Usage: bench:sample [findingsPerRule]');
     const results = Object.values(readResults());
-    if (results.length === 0) throw new Error('No results found. Run "npm run bench:corpus" first.');
+    if (results.length === 0) throw new Error('No results found. Run "pnpm run bench:corpus" first.');
 
     fs.mkdirSync(LABELS_DIR, { recursive: true });
     const labels = readLabels(LABELS_DIR);

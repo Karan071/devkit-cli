@@ -6,6 +6,14 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- The project is developed with pnpm (`packageManager: pnpm@11.22.0`).
+  `pnpm-lock.yaml` replaces `package-lock.json`, CI installs with
+  `pnpm install --frozen-lockfile`, and the contributor docs use `pnpm run`.
+  pnpm passes script arguments through without `--` (`pnpm run bench
+  --update-baseline`). Nothing changes for people using the published package.
+
 ### Fixed
 
 - `tsconfig.json` uses `module`/`moduleResolution` `Node16` and declares

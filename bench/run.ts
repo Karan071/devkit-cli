@@ -1,8 +1,8 @@
 /**
  * Clones every corpus repo at its pinned commit, scans it and stores the findings in bench/results/.
  *
- *   npm run bench:corpus              all repos
- *   npm run bench:corpus -- zod hono  only the named repos
+ *   pnpm run bench:corpus           all repos
+ *   pnpm run bench:corpus zod hono  only the named repos
  */
 import fs from 'node:fs';
 import path from 'node:path';
