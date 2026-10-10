@@ -27,13 +27,24 @@ interface LoadedTsConfig {
     pathPatterns: string[];
 }
 
+/**
+ * Reads tsconfig files without expanding `include`/`files`: only the compiler options are used here, and listing the
+ * files walks the whole tree, which this is called for once per package entry point (about 100 s on date-fns).
+ */
+const OPTIONS_ONLY_HOST: ts.ParseConfigHost = {
+    useCaseSensitiveFileNames: ts.sys.useCaseSensitiveFileNames,
+    readDirectory: () => [],
+    fileExists: ts.sys.fileExists,
+    readFile: ts.sys.readFile
+};
+
 function parseTsConfigFile(configPath: string, seen = new Set<string>()): LoadedTsConfig | null {
     if (seen.has(configPath)) return null;
     seen.add(configPath);
     const configFile = ts.readConfigFile(configPath, ts.sys.readFile);
     if (configFile.error) return null;
 
-    const parsed = ts.parseJsonConfigFileContent(configFile.config, ts.sys, path.dirname(configPath), FALLBACK_RESOLUTION_OPTIONS, configPath);
+    const parsed = ts.parseJsonConfigFileContent(configFile.config, OPTIONS_ONLY_HOST, path.dirname(configPath), FALLBACK_RESOLUTION_OPTIONS, configPath);
     let options: ts.CompilerOptions = { ...parsed.options };
 
     // Solution-style configs (`"references": [...]`, `files: []`) carry their real options in the referenced projects.

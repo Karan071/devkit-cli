@@ -8,6 +8,11 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Scanning date-fns took about 2 minutes; it now takes about 6 seconds. Each
+  package entry point re-read the governing `tsconfig.json`, and every read
+  listed all files matched by its `include`, walking the whole tree. Only the
+  compiler options are needed, so the file list is no longer built. Findings
+  and scores are unchanged on all seven corpus repositories.
 - `tsconfig.json` uses `module`/`moduleResolution` `Node16` and declares
   `types: ["node"]`. The old `moduleResolution: "Node"` is deprecated and an
   error in TypeScript 6 and later, and newer compilers no longer pick up
