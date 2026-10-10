@@ -6,6 +6,15 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `tsconfig.json` uses `module`/`moduleResolution` `Node16` and declares
+  `types: ["node"]`. The old `moduleResolution: "Node"` is deprecated and an
+  error in TypeScript 6 and later, and newer compilers no longer pick up
+  `@types/node` on their own, so editors and a future TypeScript upgrade
+  reported errors in `tsconfig.json` and `bench/tsconfig.json`. The compiled
+  output is unchanged (the package is CommonJS).
+
 ## [0.2.0] - 2026-10-08
 
 DevKit now measures its own accuracy, finds injection flaws by following request
