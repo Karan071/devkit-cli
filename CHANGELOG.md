@@ -6,6 +6,14 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- A `Corpus benchmark` CI workflow clones the pinned corpus, scans it and
+  fails when a rule's labeled accuracy drops more than 2 points against
+  `bench/baseline.corpus.json`. It runs on PRs and pushes that change `src/`
+  or `bench/`, weekly, and on demand, and writes the accuracy table to the
+  job summary. Until now only the seeded repo was gated in CI.
+
 ### Changed
 
 - The project is developed with pnpm (`packageManager: pnpm@11.22.0`).

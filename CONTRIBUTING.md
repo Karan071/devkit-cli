@@ -46,6 +46,8 @@ pnpm run bench        # catch rate on the seeded repo + per-rule accuracy
 pnpm run bench:check  # the CI gate
 ```
 
+A second CI job (`corpus.yml`) scans the pinned corpus and fails when a rule's labeled accuracy drops more than 2 points against `bench/baseline.corpus.json`. To reproduce it locally, run `pnpm run bench:corpus` and then `pnpm run bench --check`.
+
 If you fix a false positive or close a detection gap, add a planted issue or decoy to `bench/seeded/` and update `bench/baseline.json` (`pnpm run bench --update-baseline`) in the same PR.
 
 ## Releasing

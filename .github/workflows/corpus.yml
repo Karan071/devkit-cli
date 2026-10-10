@@ -1,0 +1,60 @@
+name: Corpus benchmark
+
+# Scans the pinned corpus of real repositories (bench/corpus.json) and gates on the
+# labeled per-rule accuracy in baseline.corpus.json. The seeded-repo gate runs in ci.yml.
+on:
+  push:
+    branches: [main]
+    paths: ['src/**', 'bench/**', 'package.json', 'pnpm-lock.yaml', '.github/workflows/corpus.yml']
+  pull_request:
+    branches: [main]
+    paths: ['src/**', 'bench/**', 'package.json', 'pnpm-lock.yaml', '.github/workflows/corpus.yml']
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+jobs:
+  corpus:
+    name: Corpus accuracy
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - name: Use Node.js 24.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.x
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # The repos are pinned to commits, so a clone made for one corpus.json can be reused until it changes.
+      - name: Cache corpus checkouts
+        uses: actions/cache@v4
+        with:
+          path: bench/.cache
+          key: corpus-${{ hashFiles('bench/corpus.json') }}
+
+      - name: Clone and scan the corpus
+        run: pnpm run bench:corpus
+
+      - name: Corpus gate (per-rule accuracy against baseline.corpus.json)
+        run: pnpm run bench --check --markdown corpus-report.md
+
+      - name: Report in the job summary
+        if: always()
+        run: if [ -f corpus-report.md ]; then cat corpus-report.md >> "$GITHUB_STEP_SUMMARY"; fi
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: corpus-results
+          path: |
+            bench/results/
+            corpus-report.md
+          if-no-files-found: ignore
