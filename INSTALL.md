@@ -41,8 +41,8 @@ cd /path/to/devkit
 Install its dependencies and compile the TypeScript source:
 
 ```bash
-npm install
-npm run build
+pnpm install
+pnpm run build
 ```
 
 ### 2. Register the DevKit command locally
@@ -235,18 +235,18 @@ To work on DevKit itself, return to its checkout and run the test suite and Type
 
 ```bash
 cd /path/to/devkit
-npm test
-npm run build
-npm run bench:check     # the accuracy gate CI runs: planted issues and per-rule accuracy
+pnpm test
+pnpm run build
+pnpm run bench:check  # the accuracy gate CI runs: planted issues and per-rule accuracy
 ```
 
-`npm run bench` prints the full catch-rate and accuracy report. To see how the scanner is measured, read [bench/README.md](bench/README.md); the published per-rule accuracy is in [bench/ACCURACY.md](bench/ACCURACY.md).
+`pnpm run bench` prints the full catch-rate and accuracy report. To see how the scanner is measured, read [bench/README.md](bench/README.md); the published per-rule accuracy is in [bench/ACCURACY.md](bench/ACCURACY.md).
 
 ## Troubleshooting
 
 | Symptom | What to do |
 | --- | --- |
-| `devkit: command not found` | With a local checkout, run `npm run build` and `npm link` in the DevKit directory, then `npm link devkit-quality` in your project. With `npx`, use `npx devkit-quality …` (the package is `devkit-quality`; the command it installs is `devkit`). |
+| `devkit: command not found` | With a local checkout, run `pnpm run build` and `npm link` in the DevKit directory, then `npm link devkit-quality` in your project. With `npx`, use `npx devkit-quality …` (the package is `devkit-quality`; the command it installs is `devkit`). |
 | `unknown command 'doctor'` or `unknown option '--since'` | You are on a version older than 0.2.0. Check `devkit --version`; use a local checkout or update. |
 | A warning says dependencies are not installed | Run your package manager's install, then scan again. Until then `TS001` and `ERR003` are low confidence and hidden by default. `devkit doctor` shows the exact command. |
 | "No JavaScript/TypeScript files were analyzed" | Run `devkit` from the project root, and check `scan.include`/`scan.exclude` in `.devkitrc.json` and your `.devkitignore`. |
