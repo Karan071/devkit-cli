@@ -244,3 +244,41 @@ describe('taint: new security rules (T3)', () => {
         expect(taintFlows(local, 'SEC011')).toHaveLength(0);
     });
 });
+
+describe('taint: a key that matched an existing entry', () => {
+    const lookup = 'const SNIPPETS = new Map<string, string>();\nasync function findSnippet(key: string) {\n    return SNIPPETS.get(key) ?? null;\n}\nfunction readFixes(key: string) {\n    return { fixes: Array.from(SNIPPETS.keys()).filter((name) => name.startsWith(key + \'_\')) };\n}\n';
+    const confidences = (findings: Finding[], ruleId: string) => taintFlows(findings, ruleId).map((finding) => finding.confidence);
+
+    it('reports a path built from a key at LOW once a lookup with it returned something', () => {
+        const findings = scan(lookup + handler("    const key = req.body.key;\n    const snippet = await findSnippet(key);\n    if (snippet == null) {\n        res.status(404).json({});\n        return;\n    }\n    fs.readFileSync('./data/' + key + '.yml');"));
+        const flows = taintFlows(findings, 'SEC009');
+        expect(flows.map((finding) => finding.confidence)).toEqual(['LOW']);
+        expect(flows[0].description).toContain('lookup key');
+    });
+
+    it.each([
+        ['an assignment inside try', "    const key = req.body.key;\n    let snippet;\n    try {\n        snippet = await findSnippet(key);\n        if (!snippet) return;\n    } catch {\n        return;\n    }\n    fs.readFileSync('./data/' + key);"],
+        ['an empty result checked with .length, sink in the else branch', "    const key = req.body.key;\n    const fixData = readFixes(key);\n    if (fixData.fixes.length === 0) {\n        res.status(404).json({});\n    } else {\n        fs.readFileSync('./data/' + key);\n    }"],
+        ['an index into a table', "    const key = req.params.key;\n    const entry = (SNIPPETS as any)[key];\n    if (!entry) return;\n    fs.readFileSync('./data/' + key);"]
+    ])('lowers confidence after %s', (_label, body) => {
+        expect(confidences(scan(lookup + handler(body)), 'SEC009')).toEqual(['LOW']);
+    });
+
+    it('lowers a prototype-pollution finding through a helper after the lookup', () => {
+        const store = 'const solves: any = {};\nfunction storeVerdict(key: string, phase: string) {\n    solves[key][phase] = true;\n}\n';
+        const findings = scan(lookup + store + handler("    const key = req.body.key;\n    const snippet = await findSnippet(key);\n    if (snippet === null) return;\n    storeVerdict(key, 'find it');"));
+        expect(confidences(findings, 'SEC011')).toEqual(['LOW']);
+    });
+
+    it('keeps the confidence when the code goes on after nothing was found', () => {
+        const findings = scan(lookup + handler("    const key = req.body.key;\n    const snippet = await findSnippet(key);\n    if (!snippet) console.log('missing');\n    fs.readFileSync('./data/' + key);"));
+        expect(confidences(findings, 'SEC009')).toEqual(['HIGH']);
+    });
+
+    it('does not count a call that is itself a sink, or a copy of the value, as a lookup', () => {
+        const sinkCall = scan(handler("    const name = req.query.name;\n    const content = fs.readFileSync(name);\n    if (!content) return;\n    exec('cat ' + name);"));
+        expect(confidences(sinkCall, 'SEC003')).toEqual(['HIGH']);
+        const copy = scan(handler("    const name = req.query.name;\n    const trimmed = name.trim();\n    if (!trimmed) return;\n    fs.readFileSync(name);"));
+        expect(confidences(copy, 'SEC009')).toEqual(['HIGH']);
+    });
+});

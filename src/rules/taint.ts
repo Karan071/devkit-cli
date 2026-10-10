@@ -33,6 +33,8 @@ interface Taint {
     leading: boolean;
     /** Whether fixed text follows the tainted part (`dir + name + '.yml'`), which limits what an attacker can reach. */
     suffixed?: boolean;
+    /** Whether the value was used as a lookup key and the code stops when nothing is found, so it is probably one of a known set. */
+    lookedUp?: boolean;
     trace: string[];
 }
 
@@ -63,7 +65,7 @@ function union(...taints: Array<Taint | undefined>): Taint | undefined {
     for (const taint of present) for (const origin of taint.origins) origins.set(originKey(origin), origin);
     // A mix is only safe for a kind when every part of it is.
     const clean = new Set<SinkKind>(ALL_KINDS.filter((kind) => present.every((taint) => taint.clean.has(kind))));
-    return { origins: [...origins.values()], clean, leading: present.some((taint) => taint.leading), suffixed: present.every((taint) => taint.suffixed), trace: present[0].trace };
+    return { origins: [...origins.values()], clean, leading: present.some((taint) => taint.leading), suffixed: present.every((taint) => taint.suffixed), lookedUp: present.every((taint) => taint.lookedUp), trace: present[0].trace };
 }
 
 const makeCleanOrUndefined = (taint: Taint | undefined): Taint | undefined => (taint ? makeClean(taint, ALL_KINDS) : undefined);
@@ -157,7 +159,11 @@ const PASSTHROUGH_STATICS = new Set(['join', 'resolve', 'normalize', 'format', '
 interface Validated {
     symbol: ts.Symbol;
     kinds: ReadonlySet<SinkKind>;
+    /** Validated only by a lookup that found something: the value is not cleaned, but the finding is less certain. */
+    lookedUp?: boolean;
 }
+
+const applyValidation = (taint: Taint, validated: Validated): Taint => ({ ...makeClean(taint, validated.kinds), ...(validated.lookedUp ? { lookedUp: true } : {}) });
 
 const EXIT_CALLS = new Set(['exit', 'abort']);
 
@@ -306,6 +312,8 @@ class FunctionRun {
     returns: Taint | undefined;
     private readonly seen = new Set<string>();
     private readonly declaredIn = new Map<ts.Symbol, ts.Node>();
+    /** Variables holding the result of a lookup, and the request values used as its keys. */
+    private readonly lookupKeys = new Map<ts.Symbol, ts.Symbol[]>();
 
     constructor(
         private readonly analysis: TaintAnalysis,
@@ -366,9 +374,9 @@ class FunctionRun {
 
     private withClean<T>(validated: Validated[], action: () => T): T {
         const saved = validated.map(({ symbol }) => [symbol, this.env.get(symbol)] as const);
-        for (const { symbol, kinds } of validated) {
-            const current = this.env.get(symbol);
-            if (current) this.env.set(symbol, makeClean(current, kinds));
+        for (const item of validated) {
+            const current = this.env.get(item.symbol);
+            if (current) this.env.set(item.symbol, applyValidation(current, item));
         }
         try {
             return action();
@@ -596,6 +604,57 @@ class FunctionRun {
         return undefined;
     }
 
+    /**
+     * `found = await lookup(key)` or `found = table[key]`: remembers `key` as the lookup's key, so a later check that
+     * something was found tells us `key` matched an existing entry. A result that carries the data itself
+     * (`key.trim()`, `String(key)`) or a call that is itself a sink (`fs.readFile(key)`) is not a lookup.
+     */
+    private recordLookup(target: ts.Symbol, value: ts.Expression | undefined): void {
+        this.lookupKeys.delete(target);
+        let current = value;
+        while (current && (ts.isParenthesizedExpression(current) || ts.isAwaitExpression(current) || ts.isNonNullExpression(current) || ts.isAsExpression(current))) current = current.expression;
+        // `lookup(key) ?? null`
+        if (current && ts.isBinaryExpression(current) && (current.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken || current.operatorToken.kind === ts.SyntaxKind.BarBarToken)) current = current.left;
+        while (current && (ts.isParenthesizedExpression(current) || ts.isAwaitExpression(current))) current = current.expression;
+        if (!current || this.taintOf(current)) return;
+        const keys = ts.isCallExpression(current) && this.sinksOf(current).length === 0 ? [...current.arguments]
+            : ts.isElementAccessExpression(current) ? [current.argumentExpression]
+            : [];
+        const symbols = keys.map((key) => this.identifierSymbol(key)).filter((symbol): symbol is ts.Symbol => !!symbol && !!this.lookup(symbol));
+        if (symbols.length > 0) this.lookupKeys.set(target, symbols);
+    }
+
+    /** Lookup keys known to have matched an entry when `condition` evaluates to `outcome`: `found`, `found != null`, `found.items.length > 0`. */
+    private lookupGuard(condition: ts.Expression, outcome: boolean): Validated[] {
+        let current = condition;
+        while (ts.isParenthesizedExpression(current)) current = current.expression;
+        if (ts.isPrefixUnaryExpression(current) && current.operator === ts.SyntaxKind.ExclamationToken) return this.lookupGuard(current.operand, !outcome);
+
+        let found: ts.Expression = current;
+        if (ts.isBinaryExpression(current)) {
+            const operator = current.operatorToken.kind;
+            const equal = operator === ts.SyntaxKind.EqualsEqualsToken || operator === ts.SyntaxKind.EqualsEqualsEqualsToken;
+            const notEqual = operator === ts.SyntaxKind.ExclamationEqualsToken || operator === ts.SyntaxKind.ExclamationEqualsEqualsToken;
+            const greater = operator === ts.SyntaxKind.GreaterThanToken && this.isEmpty(current.right, current.left);
+            if (!equal && !notEqual && !greater) return [];
+            const subject = this.isEmpty(current.right, current.left) || greater ? current.left : this.isEmpty(current.left, current.right) ? current.right : undefined;
+            if (!subject) return [];
+            // `found == null` is false, or `found.length > 0` is true: something was found.
+            if (equal ? outcome : !outcome) return [];
+            found = subject;
+        } else if (!outcome) {
+            return [];
+        }
+        const root = this.identifierSymbol(this.rootOf(found));
+        return (root ? this.lookupKeys.get(root) ?? [] : []).map((symbol) => ({ symbol, kinds: NO_KINDS, lookedUp: true }));
+    }
+
+    /** Whether `value` is what `subject` holds when nothing was found: `null`, `undefined`, or `0` for a `.length`. */
+    private isEmpty(value: ts.Expression, subject: ts.Expression): boolean {
+        if (value.kind === ts.SyntaxKind.NullKeyword || (ts.isIdentifier(value) && value.text === 'undefined')) return true;
+        return ts.isNumericLiteral(value) && value.text === '0' && ts.isPropertyAccessExpression(subject) && subject.name.text === 'length';
+    }
+
     private callGuard(call: ts.CallExpression): Validated[] {
         const name = calleeName(call.expression);
         if (!name) return [];
@@ -643,17 +702,17 @@ class FunctionRun {
 
         if (ts.isIfStatement(node)) {
             this.visit(node.expression);
-            const whenTrue = this.validatedBy(node.expression, true);
-            const whenFalse = this.validatedBy(node.expression, false);
+            const whenTrue = [...this.validatedBy(node.expression, true), ...this.lookupGuard(node.expression, true)];
+            const whenFalse = [...this.validatedBy(node.expression, false), ...this.lookupGuard(node.expression, false)];
             this.withClean(whenTrue, () => this.visit(node.thenStatement));
             if (node.elseStatement) this.withClean(whenFalse, () => this.visit(node.elseStatement!));
             // `if (!valid(x)) return;` leaves the code below with x validated.
             const thenExits = alwaysExits(node.thenStatement);
             const elseExits = alwaysExits(node.elseStatement);
             const after = thenExits && !elseExits ? whenFalse : elseExits && !thenExits ? whenTrue : [];
-            for (const { symbol, kinds } of after) {
-                const current = this.env.get(symbol);
-                if (current) this.env.set(symbol, makeClean(current, kinds));
+            for (const item of after) {
+                const current = this.env.get(item.symbol);
+                if (current) this.env.set(item.symbol, applyValidation(current, item));
             }
             return;
         }
@@ -662,6 +721,8 @@ class FunctionRun {
 
         if (ts.isVariableDeclaration(node)) {
             this.bind(node.name, this.taintOf(node.initializer), node);
+            const declared = ts.isIdentifier(node.name) ? this.symbolOf(node.name) : undefined;
+            if (declared) this.recordLookup(declared, node.initializer);
         } else if (ts.isBinaryExpression(node) && node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && node.operatorToken.kind <= ts.SyntaxKind.LastAssignment) {
             this.handleAssignment(node);
         } else if (ts.isForOfStatement(node) || ts.isForInStatement(node)) {
@@ -689,6 +750,7 @@ class FunctionRun {
         if (ts.isIdentifier(node.left)) {
             const symbol = this.symbolOf(node.left);
             if (!symbol) return;
+            if (operator === ts.SyntaxKind.EqualsToken) this.recordLookup(symbol, node.right);
             if (value) this.env.set(symbol, extend(value, node.left.text));
             // A clean value replaces the taint only when assigned in the block that declared the variable; in a branch the old value may survive.
             else if (this.declaredIn.get(symbol) === this.statementListOf(node)) this.env.delete(symbol);
@@ -912,11 +974,12 @@ export function runTaintRules(context: RuleContext): TaintResult {
             // A path with fixed text after the tainted part (`dir + name + '.yml'`) can reach fewer files, so it is less certain.
             const confined = hit.kind === 'path' && !!hit.taint.suffixed;
             const direct = !hit.via && hit.kind !== 'pollution' && hit.kind !== 'regexp' && !confined;
-            const confidence: Confidence = direct && !local ? 'HIGH' : 'MEDIUM';
+            // A key that already matched an existing entry is probably one of a known set.
+            const confidence: Confidence = hit.taint.lookedUp ? 'LOW' : direct && !local ? 'HIGH' : 'MEDIUM';
             const { line, column } = lineAndColumn(sourceFile, hit.node.getStart(sourceFile));
             result.findings.push(buildFinding({
                 ruleId: sink.ruleId, category: 'security', severity: sink.severity, confidence, file: relativePath, line, column,
-                message: sink.title, description: `${sink.description} ${describeFlow(hit)}`,
+                message: sink.title, description: `${sink.description} ${describeFlow(hit)}${hit.taint.lookedUp ? ' The value is first used as a lookup key and the code stops when nothing is found, so it is probably limited to known keys.' : ''}`,
                 evidence: [...hit.taint.trace, hit.label].join(' → ').slice(0, 200), suggestion: sink.suggestion, fixAvailable: false
             }));
         }

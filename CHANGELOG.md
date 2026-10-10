@@ -8,6 +8,15 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Taint findings (`SEC009`, `SEC011` and the other taint rules) are `LOW`
+  confidence, and hidden by default, when the request value was first used as
+  a lookup key and the code stops when the lookup finds nothing
+  (`found = await lookup(key); if (found == null) return 404`, or
+  `if (result.items.length === 0) … else …`). The value has then matched an
+  existing entry. The finding stays visible with `--all`, because a lookup in
+  a store the user can write to does not prove the value is safe. In OWASP
+  Juice Shop this lowers the 3 path and 2 prototype-pollution findings that
+  were labeled false; no other finding changed.
 - `tsconfig.json` uses `module`/`moduleResolution` `Node16` and declares
   `types: ["node"]`. The old `moduleResolution: "Node"` is deprecated and an
   error in TypeScript 6 and later, and newer compilers no longer pick up
